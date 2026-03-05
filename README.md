@@ -76,27 +76,147 @@ The platform detects and sanitizes:
 
 ## Getting Started
 
-### Demo Credentials
+### Default Credentials
 
-The application uses mock authentication. You can log in with any email/password combination.
+| Role  | Email             | Password  |
+|-------|-------------------|-----------|
+| Admin | admin@pill.com    | Admin@123 |
+| User  | user@pill.com     | User@123  |
 
-**Admin Access**: Use the "Admin Login" tab
-**User Access**: Use the "User Login" tab
+### Running the Application
 
-### Development
+You need **3 separate terminal windows** open at the same time.
+
+---
+
+**Terminal 1 — Backend API Server**
 
 ```bash
-# Install dependencies
-pnpm install
+cd backend
+npm run dev
+```
 
-# Start development server
-pnpm dev
+Wait until you see: `🚀 Server running on http://localhost:3001`
 
-# Build for production
-pnpm build
+---
+
+**Terminal 2 — BullMQ Worker**
+
+```bash
+cd backend
+npm run dev:worker
+```
+
+Wait until you see: `[Worker] Started`
+
+---
+
+**Terminal 3 — Frontend**
+
+```bash
+npm run dev
+```
+
+Wait until you see: `Local: http://localhost:5173/`
+
+Then open **http://localhost:5173** in your browser.
+
+---
+
+### Database Setup (first time only)
+
+```bash
+cd backend
+
+# Push schema to Neon PostgreSQL
+npx prisma db push
+
+# Seed default admin and user accounts
+npm run db:seed
 ```
 
 ## Architecture
+
+### Backend Stack
+- **Express.js**: REST API server (port 3001)
+- **TypeScript**: Fully typed backend
+- **Prisma ORM**: Database access layer
+- **Neon PostgreSQL 16**: Cloud-hosted relational database
+- **BullMQ + Upstash Redis**: Job queue for async file processing
+- **Cloudflare R2**: S3-compatible object storage for files
+- **Brevo**: Transactional email service
+- **JWT**: Stateless authentication tokens
+- **bcryptjs**: Secure password hashing
+- **Zod**: Runtime request validation
+- **Helmet + CORS**: Security headers and cross-origin control
+
+### Backend Structure
+
+```
+backend/
+├── prisma/
+│   ├── schema.prisma        # DB models: User, File, AuditLog
+│   └── seed.ts              # Default admin + user accounts
+├── src/
+│   ├── config/
+│   │   ├── prisma.ts        # Prisma client singleton
+│   │   ├── redis.ts         # Upstash Redis connection
+│   │   ├── r2.ts            # Cloudflare R2 S3 client
+│   │   ├── queue.ts         # BullMQ pii-scan queue
+│   │   └── multer.ts        # File upload middleware
+│   ├── middleware/
+│   │   ├── auth.middleware.ts   # JWT authentication
+│   │   ├── rbac.middleware.ts   # Role-based access control
+│   │   └── error.middleware.ts  # Global error handler
+│   ├── services/
+│   │   ├── audit.service.ts     # Audit log writer
+│   │   ├── email.service.ts     # Brevo email sender
+│   │   └── r2.service.ts        # R2 upload/download/presign
+│   ├── routes/
+│   │   ├── auth.routes.ts       # /api/auth — login, logout, reset
+│   │   ├── admin/               # /api/admin — files, users, stats, audit
+│   │   └── user/                # /api — user files, profile
+│   ├── worker.ts            # BullMQ 7-stage PII pipeline worker
+│   └── index.ts             # Express app entry point
+└── .env                     # Environment variables (credentials)
+```
+
+### API Endpoints
+
+| Method | Path | Role | Description |
+|--------|------|------|-------------|
+| POST | `/api/auth/login` | Public | Login and receive JWT |
+| POST | `/api/auth/logout` | Auth | Invalidate session |
+| GET | `/api/auth/me` | Auth | Current user info |
+| POST | `/api/auth/forgot-password` | Public | Send reset email |
+| POST | `/api/auth/reset-password` | Public | Reset with token |
+| GET | `/api/admin/files` | Admin | List all files |
+| POST | `/api/admin/files/upload` | Admin | Upload file |
+| DELETE | `/api/admin/files/:id` | Admin | Delete file |
+| POST | `/api/admin/files/:id/rescan` | Admin | Re-queue for scanning |
+| GET | `/api/admin/users` | Admin | List all users |
+| POST | `/api/admin/users` | Admin | Create user |
+| PUT | `/api/admin/users/:id` | Admin | Update user |
+| GET | `/api/admin/stats` | Admin | Dashboard KPIs |
+| GET | `/api/admin/audit-logs` | Admin | Paginated audit trail |
+| GET | `/api/admin/audit-logs/export` | Admin | Export CSV |
+| GET | `/api/files` | User | List sanitized files |
+| GET | `/api/files/:id/sanitized` | User | Download sanitized |
+| GET | `/api/profile` | Auth | View profile |
+| PUT | `/api/profile` | Auth | Update profile |
+| PUT | `/api/profile/password` | Auth | Change password |
+
+### 7-Stage PII Pipeline (BullMQ Worker)
+
+1. **Download** — Fetch original file from Cloudflare R2
+2. **Analyze** — POST to Python PII Engine `/analyze`
+3. **Sanitize** — POST to Python PII Engine `/sanitize`
+4. **Upload** — Store sanitized file back to R2
+5. **Update DB** — Save entity count, types, processing time
+6. **Audit Log** — Record scan completion
+7. **Email** — Notify uploader via Brevo
+
+
 
 ### Frontend Stack
 - **React 18**: Modern UI library
@@ -206,15 +326,12 @@ src/
 
 ## Future Enhancements
 
-- Real backend integration with Express.js API
-- Live file processing with progress tracking
-- Advanced PII detection with ML models
+- Python FastAPI PII Engine integration (ML-based detection)
 - Bulk file operations
 - Custom sanitization policies
-- Email notifications
-- Multi-language support
 - Dark mode
 - Export reports to PDF
+- Multi-language support
 
 ## License
 
