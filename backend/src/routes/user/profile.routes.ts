@@ -1,10 +1,25 @@
 import { Router, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
+import multer from 'multer';
 import { prisma }      from '../../config/prisma';
+import { uploadAvatarBuffer, deleteAvatarFromCloudinary, resolveAvatarUrl } from '../../config/cloudinary';
 import { AuthRequest } from '../../types';
 
 const router = Router();
+
+// Multer for avatar uploads — images only, max 5 MB
+const avatarUpload = multer({
+  storage: multer.memoryStorage(),
+  limits:  { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (['image/jpeg', 'image/jpg', 'image/png', 'image/webp'].includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only JPEG, PNG, or WebP images are allowed'));
+    }
+  },
+});
 
 // ─── GET /api/profile ─────────────────────────────────────
 
@@ -12,10 +27,11 @@ router.get('/', async (req: AuthRequest, res: Response) => {
   try {
     const user = await prisma.user.findUnique({
       where:  { id: req.user!.userId },
-      select: { id: true, name: true, email: true, role: true, isActive: true, createdAt: true, lastLoginAt: true },
+      select: { id: true, name: true, email: true, role: true, isActive: true, avatarUrl: true, createdAt: true, lastLoginAt: true },
     });
     if (!user) { res.status(404).json({ error: 'User not found' }); return; }
-    res.json(user);
+    const avatarUrl = await resolveAvatarUrl(user.avatarUrl);
+    res.json({ ...user, avatarUrl });
   } catch {
     res.status(500).json({ error: 'Failed to fetch profile' });
   }
@@ -30,7 +46,6 @@ router.put('/', async (req: AuthRequest, res: Response) => {
       email: z.string().email().optional(),
     }).parse(req.body);
 
-    // Check email uniqueness if changing
     if (data.email) {
       const clash = await prisma.user.findFirst({
         where: { email: data.email, NOT: { id: req.user!.userId } },
@@ -41,7 +56,7 @@ router.put('/', async (req: AuthRequest, res: Response) => {
     const user = await prisma.user.update({
       where:  { id: req.user!.userId },
       data,
-      select: { id: true, name: true, email: true, role: true },
+      select: { id: true, name: true, email: true, role: true, avatarUrl: true },
     });
 
     res.json(user);
@@ -76,4 +91,46 @@ router.put('/password', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// ─── POST /api/profile/avatar ─────────────────────────────
+
+router.post('/avatar', avatarUpload.single('avatar'), async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.file) { res.status(400).json({ error: 'No image file provided' }); return; }
+
+    const avatarKey = await uploadAvatarBuffer(req.file.buffer, req.user!.userId, req.file.mimetype);
+
+    const user = await prisma.user.update({
+      where:  { id: req.user!.userId },
+      data:   { avatarUrl: avatarKey },
+      select: { id: true, name: true, email: true, role: true, avatarUrl: true },
+    });
+
+    // Return a resolved presigned URL so the client can display it immediately
+    const avatarUrl = await resolveAvatarUrl(user.avatarUrl);
+    res.json({ ...user, avatarUrl });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to upload avatar' });
+  }
+});
+
+// ─── DELETE /api/profile/avatar ───────────────────────────
+
+router.delete('/avatar', async (req: AuthRequest, res: Response) => {
+  try {
+    const current = await prisma.user.findUnique({ where: { id: req.user!.userId }, select: { avatarUrl: true } });
+    await deleteAvatarFromCloudinary(req.user!.userId, current?.avatarUrl);
+
+    const user = await prisma.user.update({
+      where:  { id: req.user!.userId },
+      data:   { avatarUrl: null },
+      select: { id: true, name: true, email: true, role: true, avatarUrl: true },
+    });
+
+    res.json(user);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to remove avatar' });
+  }
+});
+
 export default router;
+

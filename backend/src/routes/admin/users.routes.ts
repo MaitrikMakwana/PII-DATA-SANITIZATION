@@ -86,8 +86,12 @@ router.post('/', async (req: AuthRequest, res: Response) => {
       select: { id: true, name: true, email: true, role: true, isActive: true, createdAt: true },
     });
 
-    // Send welcome email with credentials
-    await emailService.sendWelcome(user.email, user.name, tempPassword);
+    // Send welcome email (non-blocking — may fail if email service not configured)
+    try {
+      await emailService.sendWelcome(user.email, user.name, tempPassword);
+    } catch (emailErr) {
+      console.warn('[CreateUser] Welcome email not sent:', (emailErr as Error).message);
+    }
 
     await auditService.log({
       userId:    req.user!.userId,
@@ -203,7 +207,11 @@ router.patch('/:id/reset-password', async (req: AuthRequest, res: Response) => {
     const hashed       = await bcrypt.hash(tempPassword, 12);
 
     await prisma.user.update({ where: { id: user.id }, data: { password: hashed } });
-    await emailService.sendWelcome(user.email, user.name, tempPassword);
+    try {
+      await emailService.sendWelcome(user.email, user.name, tempPassword);
+    } catch (emailErr) {
+      console.warn('[ResetPassword] Email not sent:', (emailErr as Error).message);
+    }
 
     await auditService.log({
       userId:    req.user!.userId,
@@ -213,7 +221,7 @@ router.patch('/:id/reset-password', async (req: AuthRequest, res: Response) => {
       metadata:  { affectedUserId: user.id },
     });
 
-    res.json({ message: 'Password reset. New credentials sent via email.' });
+    res.json({ message: 'Password reset. New credentials sent via email.', tempPassword });
   } catch {
     res.status(500).json({ error: 'Failed to reset password' });
   }
