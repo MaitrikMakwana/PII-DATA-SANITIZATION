@@ -67,12 +67,13 @@ export const statsApi = {
 // ── Admin: Files ──────────────────────────────────────────
 
 export const adminFilesApi = {
-  list: (params?: { page?: number; limit?: number; search?: string; status?: string }) => {
+  list: (params?: { page?: number; limit?: number; search?: string; status?: string; mimeType?: string }) => {
     const qs = new URLSearchParams();
-    if (params?.page)   qs.set('page',   String(params.page));
-    if (params?.limit)  qs.set('limit',  String(params.limit));
-    if (params?.search) qs.set('search', params.search);
-    if (params?.status) qs.set('status', params.status);
+    if (params?.page)     qs.set('page',     String(params.page));
+    if (params?.limit)    qs.set('limit',    String(params.limit));
+    if (params?.search)   qs.set('search',   params.search);
+    if (params?.status)   qs.set('status',   params.status);
+    if (params?.mimeType) qs.set('mimeType', params.mimeType);
     return request<{ files: ApiFile[]; total: number }>(`/admin/files?${qs}`);
   },
 

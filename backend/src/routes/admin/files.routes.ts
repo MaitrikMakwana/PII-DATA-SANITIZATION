@@ -35,6 +35,8 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     const where: Record<string, unknown> = {};
     if (status) where.status = status.toUpperCase();
     if (search) where.originalName = { contains: search, mode: 'insensitive' };
+    const { mimeType } = req.query as Record<string, string>;
+    if (mimeType) where.mimeType = { in: mimeType.split(',') };
 
     const [files, total] = await Promise.all([
       prisma.file.findMany({

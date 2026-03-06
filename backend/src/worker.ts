@@ -33,6 +33,7 @@ const CONCURRENCY     = parseInt(process.env.WORKER_CONCURRENCY ?? '5', 10);
 function jobTimeout(mimeType: string): number {
   if (mimeType === 'application/pdf') return 120_000;
   if (mimeType.includes('word'))      return 60_000;
+  if (mimeType.startsWith('image/'))  return 120_000;
   return 30_000;
 }
 
