@@ -28,13 +28,24 @@ import { PiiScanJobData } from './config/queue';
 const PII_ENGINE_URL  = process.env.PII_ENGINE_URL!;
 const CONCURRENCY     = parseInt(process.env.WORKER_CONCURRENCY ?? '5', 10);
 
-// ─── Timeout per MIME type (ms) ───────────────────────────
+// ─── Timeout per MIME type (ms) — generous for free-tier cold starts ──
 
 function jobTimeout(mimeType: string): number {
-  if (mimeType === 'application/pdf') return 120_000;
-  if (mimeType.includes('word'))      return 60_000;
-  if (mimeType.startsWith('image/'))  return 120_000;
-  return 30_000;
+  if (mimeType === 'application/pdf') return 300_000;
+  if (mimeType.includes('word'))      return 180_000;
+  if (mimeType.startsWith('image/'))  return 300_000;
+  return 120_000;
+}
+
+// ─── Wake the PII engine (Render free tier sleeps after 15 min) ───────
+
+async function wakePiiEngine(): Promise<void> {
+  try {
+    await axios.get(`${PII_ENGINE_URL}/health`, { timeout: 120_000 });
+    console.log('[Worker] PII engine is awake');
+  } catch {
+    console.warn('[Worker] PII engine wake-up call failed, proceeding anyway');
+  }
 }
 
 // ─── Main processor ──────────────────────────────────────
@@ -60,6 +71,9 @@ async function processJob(job: Job<PiiScanJobData>): Promise<void> {
   const fileBuffer = Buffer.concat(chunks);
 
   const timeout = jobTimeout(mimeType);
+
+  // Stage 2.5 — wake PII engine (cold start on Render free tier)
+  await wakePiiEngine();
 
   // Stage 3 — call /analyze on Python PII Engine
   const analyzeForm = new FormData();
