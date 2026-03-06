@@ -487,7 +487,7 @@ export function NewLandingPage() {
                     </p>
                     <div className="space-y-2 text-xs text-slate-500">
                       <p>Admin: piisanitize@gmail.com / Admin@123</p>
-                      <p>User: user@pill.com / User@123</p>
+                      <p>User: kachhiyadarshan6514@gmail.com / Dar@1234</p>
                     </div>
                   </div>
                 </div>
