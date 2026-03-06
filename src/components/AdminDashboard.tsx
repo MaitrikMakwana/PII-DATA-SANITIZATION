@@ -8,6 +8,7 @@ import {
 import { Sidebar, SidebarBody, SidebarLink, useSidebar } from '../app/components/ui/sidebar-custom';
 import { Spinner } from '../app/components/ui/spinner';
 import { NoiseBackground } from '../app/components/ui/noise-background';
+import { FileIcon } from './FileIcon';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell,
 } from 'recharts';
@@ -833,9 +834,7 @@ function FilesView() {
             <div className="space-y-2">
               {files.map((file) => (
                 <div key={file.id} className={cn(dRow, 'gap-3')}>
-                  <div className="h-10 w-10 rounded-xl bg-blue-500/20 border border-blue-500/30 flex items-center justify-center shrink-0">
-                    <FileText className="h-5 w-5 text-blue-400" />
-                  </div>
+                  <FileIcon mimeType={file.mimeType} />
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-slate-200 truncate">{file.originalName}</p>
                     <p className="text-xs text-slate-500 mt-0.5">
