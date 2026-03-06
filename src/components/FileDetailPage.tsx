@@ -9,7 +9,8 @@ import {
 } from 'lucide-react';
 import { Spinner } from '../app/components/ui/spinner';
 import { cn } from '../lib/utils';
-import { formatFileSize, formatDate, getFileIcon } from '../lib/utils';
+import { formatFileSize, formatDate } from '../lib/utils';
+import { FileIcon } from './FileIcon';
 import { useAuth } from '../lib/auth-context';
 import { toast } from 'sonner';
 import { adminFilesApi, userFilesApi, type ApiFile } from '../lib/api';
@@ -122,7 +123,7 @@ export function FileDetailPage({ fileId, onBack }: FileDetailPageProps) {
         <div className="flex items-center gap-4">
           <button onClick={onBack} className={dOutline}><ArrowLeft className="w-4 h-4" /> Back</button>
           <div className="flex items-center gap-3">
-            <span className="text-3xl">{getFileIcon(file.mimeType)}</span>
+            <FileIcon mimeType={file.mimeType} size="lg" />
             <div>
               <h1 className="text-2xl font-bold text-white">{file.originalName}</h1>
               <p className="text-sm text-slate-400">{formatFileSize(file.sizeBytes)}</p>

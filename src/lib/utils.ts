@@ -38,14 +38,14 @@ export function formatRelativeTime(dateString: string): string {
 }
 
 export function getFileIcon(mimeType: string): string {
-  if (mimeType.includes('csv')) return '📊';
-  if (mimeType.includes('json')) return '📋';
-  if (mimeType.includes('pdf')) return '📄';
-  if (mimeType.includes('word') || mimeType.includes('docx')) return '📝';
-  if (mimeType.includes('sql')) return '🗄️';
-  if (mimeType.includes('text')) return '📃';
-  if (mimeType.includes('image')) return '🖼️';
-  return '📁';
+  if (mimeType.includes('csv')) return 'csv';
+  if (mimeType.includes('json')) return 'json';
+  if (mimeType.includes('pdf')) return 'pdf';
+  if (mimeType.includes('word') || mimeType.includes('docx')) return 'docx';
+  if (mimeType.includes('sql')) return 'sql';
+  if (mimeType.includes('text')) return 'txt';
+  if (mimeType.includes('image')) return 'image';
+  return 'file';
 }
 
 export function getRiskColor(risk: string): string {

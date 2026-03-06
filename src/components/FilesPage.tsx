@@ -37,7 +37,8 @@ import {
 } from '../app/components/ui/dialog';
 import { Label } from '../app/components/ui/label';
 import { mockFiles } from '../lib/mock-data';
-import { formatFileSize, formatDate, getFileIcon, getStatusColor, getRiskColor } from '../lib/utils';
+import { formatFileSize, formatDate, getStatusColor, getRiskColor } from '../lib/utils';
+import { FileIcon } from './FileIcon';
 import { useAuth } from '../lib/auth-context';
 import { FileMetadata } from '../types';
 import { toast } from 'sonner';
@@ -189,7 +190,7 @@ export function FilesPage({ onViewFile }: FilesPageProps) {
                   <TableRow key={file.id} className="hover:bg-slate-50">
                     <TableCell>
                       <div className="flex items-center gap-3">
-                        <span className="text-2xl">{getFileIcon(file.mimeType)}</span>
+                        <FileIcon mimeType={file.mimeType} />
                         <div>
                           <p className="font-medium text-slate-900">{file.originalName}</p>
                           <p className="text-xs text-slate-500">{file.mimeType}</p>
@@ -309,7 +310,7 @@ export function FilesPage({ onViewFile }: FilesPageProps) {
               {selectedFile && (
                 <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
                   <div className="flex items-center gap-2">
-                    <span className="text-2xl">{getFileIcon(selectedFile.type)}</span>
+                    <FileIcon mimeType={selectedFile.type} />
                     <div>
                       <p className="text-sm font-medium">{selectedFile.name}</p>
                       <p className="text-xs text-slate-500">
