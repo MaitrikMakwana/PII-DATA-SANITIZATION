@@ -24,6 +24,7 @@ router.get('/', async (_req: AuthRequest, res: Response) => {
       failedFiles,
       totalUsers,
       activeUsers,
+      storageAgg,
       topRiskFilesRaw,
       recentActivity,
       filesWithPii,
@@ -35,6 +36,7 @@ router.get('/', async (_req: AuthRequest, res: Response) => {
       prisma.file.count({ where: { status: 'ERROR' } }),
       prisma.user.count(),
       prisma.user.count({ where: { isActive: true } }),
+      prisma.file.aggregate({ _sum: { sizeBytes: true } }),
       prisma.file.findMany({
         where:   { status: 'SANITIZED' },
         orderBy: { entityCount: 'desc' },
@@ -77,6 +79,12 @@ router.get('/', async (_req: AuthRequest, res: Response) => {
       piiScanQueue.getCompletedCount(),
     ]);
 
+    // Original files + sanitized copies both live in R2
+    const originalBytes = Number(storageAgg._sum.sizeBytes ?? 0);
+    // Rough estimate: sanitized files ≈ same size as originals
+    const sanitizedCount = sanitizedFiles;
+    const totalStorageBytes = originalBytes * (sanitizedCount > 0 ? 2 : 1);
+
     res.json({
       totalFiles,
       pendingFiles,
@@ -85,6 +93,11 @@ router.get('/', async (_req: AuthRequest, res: Response) => {
       failedFiles,
       totalUsers,
       activeUsers,
+      storage: {
+        usedBytes: totalStorageBytes,
+        totalFiles,
+        limitBytes: 10 * 1024 * 1024 * 1024, // R2 free tier: 10 GB
+      },
       topRiskFiles: topRiskFilesRaw.map((f) => ({
         ...f,
         riskScore: computeRiskScore(f.entityCount),

@@ -1,4 +1,8 @@
 import 'dotenv/config';
+
+// Prisma returns BigInt for large number columns – make JSON.stringify handle them
+(BigInt.prototype as any).toJSON = function () { return Number(this); };
+
 import express      from 'express';
 import cors         from 'cors';
 import helmet       from 'helmet';

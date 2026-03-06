@@ -1,4 +1,4 @@
-const BASE = 'http://localhost:3001/api';
+const BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:3001/api';
 
 function getToken() {
   return localStorage.getItem('token') ?? '';
@@ -76,6 +76,11 @@ export const adminFilesApi = {
     return request<{ files: ApiFile[]; total: number }>(`/admin/files?${qs}`);
   },
 
+  get: (id: string) => request<ApiFile>(`/admin/files/${id}`),
+
+  getStatus: (id: string) =>
+    request<{ status: string; entityCount: number | null; entitiesByType: Record<string, number> | null; sanitizedAt: string | null; lastError: string | null }>(`/admin/files/${id}/status`),
+
   upload: (formData: FormData) =>
     fetch(`${BASE}/admin/files/upload`, {
       method: 'POST',
@@ -97,6 +102,50 @@ export const adminFilesApi = {
 
   getPresigned: (id: string, type: 'original' | 'sanitized') =>
     request<{ url: string }>(`/admin/files/${id}/presigned?type=${type}`),
+
+  bulkStatus: (ids: string[]) =>
+    request<Array<{ id: string; status: string; entityCount: number | null; sanitizedAt: string | null; lastError: string | null }>>('/admin/files/bulk-status', {
+      method: 'POST',
+      body: JSON.stringify({ ids }),
+    }),
+
+  downloadOriginal: (id: string, filename: string) =>
+    fetch(`${BASE}/admin/files/${id}/original`, {
+      headers: { Authorization: `Bearer ${getToken()}` },
+    }).then(async (res) => {
+      if (!res.ok) throw new Error('Download failed');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
+      URL.revokeObjectURL(url);
+    }),
+
+  downloadSanitized: (id: string, filename: string) =>
+    fetch(`${BASE}/admin/files/${id}/sanitized`, {
+      headers: { Authorization: `Bearer ${getToken()}` },
+    }).then(async (res) => {
+      if (!res.ok) throw new Error('Download failed');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = `sanitized_${filename}`; a.click();
+      URL.revokeObjectURL(url);
+    }),
+
+  previewSanitized: (id: string): Promise<Blob> =>
+    fetch(`${BASE}/admin/files/${id}/sanitized`, {
+      headers: { Authorization: `Bearer ${getToken()}` },
+    }).then(async (res) => {
+      if (!res.ok) throw new Error('Preview failed');
+      return res.blob();
+    }),
+
+  previewOriginal: (id: string): Promise<Blob> =>
+    fetch(`${BASE}/admin/files/${id}/original`, {
+      headers: { Authorization: `Bearer ${getToken()}` },
+    }).then(async (res) => {
+      if (!res.ok) throw new Error('Preview failed');
+      return res.blob();
+    }),
 };
 
 // ── Admin: Users ──────────────────────────────────────────
@@ -184,8 +233,34 @@ export const profileApi = {
 // ── User: Files ───────────────────────────────────────────
 
 export const userFilesApi = {
-  list: () => request<{ files: ApiFile[]; total: number }>('/files'),
+  list: (params?: { page?: number; limit?: number; search?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.page)   qs.set('page',   String(params.page));
+    if (params?.limit)  qs.set('limit',  String(params.limit));
+    if (params?.search) qs.set('search', params.search);
+    return request<{ files: ApiFile[]; total: number }>(`/files?${qs}`);
+  },
   get: (id: string) => request<ApiFile>(`/files/${id}`),
+  getStatus: (id: string) =>
+    request<{ status: string; entityCount: number | null; sanitizedAt: string | null; lastError: string | null }>(`/files/${id}/status`),
+  downloadSanitized: (id: string, filename: string) =>
+    fetch(`${BASE}/files/${id}/sanitized`, {
+      headers: { Authorization: `Bearer ${getToken()}` },
+    }).then(async (res) => {
+      if (!res.ok) throw new Error('Download failed');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = `sanitized_${filename}`; a.click();
+      URL.revokeObjectURL(url);
+    }),
+
+  previewSanitized: (id: string): Promise<Blob> =>
+    fetch(`${BASE}/files/${id}/sanitized`, {
+      headers: { Authorization: `Bearer ${getToken()}` },
+    }).then(async (res) => {
+      if (!res.ok) throw new Error('Preview failed');
+      return res.blob();
+    }),
 };
 
 // ── Types ─────────────────────────────────────────────────
@@ -235,6 +310,11 @@ export interface AdminStats {
   failedFiles: number;
   totalUsers: number;
   activeUsers: number;
+  storage: {
+    usedBytes: number;
+    totalFiles: number;
+    limitBytes: number;
+  };
   piiDetectionsByType: Array<{ type: string; count: number }>;
   recentActivity: ApiAuditLog[];
   topRiskFiles: Array<{

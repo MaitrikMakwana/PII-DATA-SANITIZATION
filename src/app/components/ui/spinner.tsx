@@ -8,11 +8,11 @@ const Spinner = React.forwardRef<HTMLDivElement, SpinnerProps>(
     return (
       <div
         ref={ref}
-        className={cn("animate-spin", className)}
+        className={cn("animate-spin inline-flex items-center justify-center", className)}
         {...props}
       >
         <svg
-          className="h-4 w-4"
+          className="h-full w-full"
           xmlns="http://www.w3.org/2000/svg"
           fill="none"
           viewBox="0 0 24 24"
