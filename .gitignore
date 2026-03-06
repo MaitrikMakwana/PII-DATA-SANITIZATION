@@ -40,3 +40,10 @@ Thumbs.db
 .parcel-cache/
 .eslintcache
 *.tsbuildinfo
+
+# Python dependencies & artifacts
+pii-engine/venv/
+pii-engine/__pycache__/
+presidio-main/
+*.pyc
+__pycache__/

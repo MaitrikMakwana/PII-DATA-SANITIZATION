@@ -3,6 +3,7 @@ import {
   LayoutDashboard, FileText, Users, Settings, LogOut, Clock, CheckCircle2,
   XCircle, AlertTriangle, Upload, Download, ScrollText, Pause, Play, Trash2,
   RefreshCw, Search, UserPlus, Eye, EyeOff, Pencil, KeyRound, Copy, Check,
+  ChevronDown, ChevronUp, X, Loader2, HardDrive,
 } from 'lucide-react';
 import { Sidebar, SidebarBody, SidebarLink, useSidebar } from '../app/components/ui/sidebar-custom';
 import { Spinner } from '../app/components/ui/spinner';
@@ -178,6 +179,13 @@ function TableSkeleton({ rows = 8 }: { rows?: number }) {
 }
 
 // DashboardView
+const _fmtBytes = (b: number) => {
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 ** 2) return `${(b / 1024).toFixed(1)} KB`;
+  if (b < 1024 ** 3) return `${(b / 1024 ** 2).toFixed(1)} MB`;
+  return `${(b / 1024 ** 3).toFixed(2)} GB`;
+};
+
 function DashboardView() {
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -225,6 +233,17 @@ function DashboardView() {
           </GlassCard>
         ))}
       </div>
+
+      {/* R2 storage */}
+      {stats.storage && (
+        <div className="flex items-center gap-3 px-4 py-2 rounded-lg border border-slate-700/40 bg-slate-800/30 max-w-lg w-full">
+          <HardDrive className="h-4 w-4 text-violet-400 shrink-0" />
+          <div className="flex-1 h-2 rounded-full bg-slate-700/60 overflow-hidden">
+            <div className="h-full rounded-full bg-gradient-to-r from-violet-500 to-purple-500" style={{ width: `${Math.min((stats.storage.usedBytes / stats.storage.limitBytes) * 100, 100)}%` }} />
+          </div>
+          <span className="text-xs font-mono text-slate-400 shrink-0">{_fmtBytes(stats.storage.usedBytes)} / 10 GB</span>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         <GlassCard>
@@ -335,6 +354,135 @@ function DashboardView() {
   );
 }
 
+// ── Upload Queue types ─────────────────────────────────
+type QueueStage = 'uploading' | 'processing' | 'scanning' | 'completed' | 'error';
+interface QueueItem {
+  localId: string;
+  name: string;
+  size: number;
+  stage: QueueStage;
+  progress: number;          // 0-100
+  fileId: string | null;     // set after upload succeeds
+  entityCount: number | null;
+  error: string | null;
+}
+
+const STAGE_META: Record<QueueStage, { label: string; color: string; border: string; icon: typeof Upload }> = {
+  uploading:  { label: 'Uploading',  color: 'text-blue-400',   border: 'border-blue-500/30  bg-blue-500/10',  icon: Upload },
+  processing: { label: 'Processing', color: 'text-amber-400',  border: 'border-amber-500/30 bg-amber-500/10', icon: Loader2 },
+  scanning:   { label: 'Scanning',   color: 'text-violet-400', border: 'border-violet-500/30 bg-violet-500/10', icon: Search },
+  completed:  { label: 'Completed',  color: 'text-green-400',  border: 'border-green-500/30 bg-green-500/10', icon: CheckCircle2 },
+  error:      { label: 'Error',      color: 'text-red-400',    border: 'border-red-500/30   bg-red-500/10',   icon: XCircle },
+};
+
+function QueueStageBadge({ stage }: { stage: QueueStage }) {
+  const m = STAGE_META[stage];
+  const Icon = m.icon;
+  const isActive = stage === 'uploading' || stage === 'processing' || stage === 'scanning';
+  return (
+    <span className={cn('inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold border', m.border, m.color)}>
+      {isActive ? <Spinner className="h-3 w-3" /> : <Icon className="h-3 w-3" />}
+      {m.label}
+    </span>
+  );
+}
+
+// ── Upload Queue Panel ────────────────────────────────────
+function UploadQueuePanel({ queue, collapsed, onToggle, onClear, onDismiss }: {
+  queue: QueueItem[];
+  collapsed: boolean;
+  onToggle: () => void;
+  onClear: () => void;
+  onDismiss: (id: string) => void;
+}) {
+  if (queue.length === 0) return null;
+
+  const done = queue.filter(q => q.stage === 'completed').length;
+  const errCount = queue.filter(q => q.stage === 'error').length;
+  const inProgress = queue.length - done - errCount;
+
+  return (
+    <div className="w-full bg-slate-900/80 backdrop-blur-xl border border-slate-700/60 rounded-2xl overflow-hidden">
+      {/* Header */}
+      <button onClick={onToggle}
+        className="w-full flex items-center justify-between px-4 py-3 border-b border-slate-700/50 hover:bg-slate-800/50 transition-colors">
+        <div className="flex items-center gap-2">
+          <div className="h-7 w-7 rounded-lg bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center">
+            <Upload className="h-3.5 w-3.5 text-indigo-400" />
+          </div>
+          <span className="text-sm font-semibold text-white">Upload Queue</span>
+          <span className="text-xs text-slate-400">({done}/{queue.length})</span>
+        </div>
+        <div className="flex items-center gap-2">
+          {inProgress > 0 && <Spinner className="h-3.5 w-3.5 text-cyan-400" />}
+          {collapsed ? <ChevronUp className="h-4 w-4 text-slate-400" /> : <ChevronDown className="h-4 w-4 text-slate-400" />}
+        </div>
+      </button>
+
+      {!collapsed && (
+        <>
+          {/* Progress summary bar */}
+          <div className="px-4 pt-3 pb-1">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-[11px] text-slate-500 uppercase tracking-wide font-medium">
+                {inProgress > 0 ? `${inProgress} in progress` : done === queue.length ? 'All complete' : `${errCount} failed`}
+              </span>
+              {done + errCount === queue.length && (
+                <button onClick={onClear} className="text-[11px] text-slate-500 hover:text-slate-300 transition-colors">Clear all</button>
+              )}
+            </div>
+            <div className="h-1.5 w-full rounded-full bg-slate-800 overflow-hidden">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-indigo-500 via-cyan-400 to-green-400 transition-all duration-500"
+                style={{ width: `${queue.length > 0 ? ((done / queue.length) * 100) : 0}%` }}
+              />
+            </div>
+          </div>
+
+          {/* Queue items */}
+          <div className="overflow-y-auto px-3 py-2 space-y-1.5 max-h-[40vh] scrollbar-thin scrollbar-track-slate-800 scrollbar-thumb-slate-600">
+            {queue.map(item => (
+              <div key={item.localId} className="flex items-center gap-3 p-3 bg-slate-800/50 border border-slate-700/30 rounded-xl">
+                <div className="h-8 w-8 rounded-lg bg-blue-500/20 border border-blue-500/30 flex items-center justify-center shrink-0">
+                  <FileText className="h-4 w-4 text-blue-400" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-medium text-slate-200 truncate">{item.name}</p>
+                  <div className="flex items-center gap-2 mt-1">
+                    <span className="text-[10px] text-slate-500">{formatBytes(item.size)}</span>
+                    <QueueStageBadge stage={item.stage} />
+                    {item.entityCount != null && item.stage === 'completed' && (
+                      <span className="text-[10px] text-purple-400">{item.entityCount} PII</span>
+                    )}
+                  </div>
+                  {/* Progress bar for uploading stage */}
+                  {item.stage === 'uploading' && (
+                    <div className="mt-1.5 h-1 w-full rounded-full bg-slate-700 overflow-hidden">
+                      <div className="h-full rounded-full bg-blue-500 transition-all duration-300" style={{ width: `${item.progress}%` }} />
+                    </div>
+                  )}
+                  {/* Indeterminate bar for processing/scanning */}
+                  {(item.stage === 'processing' || item.stage === 'scanning') && (
+                    <div className="mt-1.5 h-1 w-full rounded-full bg-slate-700 overflow-hidden">
+                      <div className="h-full w-1/3 rounded-full bg-gradient-to-r from-amber-500 to-violet-500 animate-[shimmer_1.5s_ease-in-out_infinite]" />
+                    </div>
+                  )}
+                  {item.error && <p className="text-[10px] text-red-400 mt-1 truncate">{item.error}</p>}
+                </div>
+                {(item.stage === 'completed' || item.stage === 'error') && (
+                  <button onClick={() => onDismiss(item.localId)} className="p-1 rounded-md text-slate-600 hover:text-slate-300 hover:bg-slate-700/50 transition-all shrink-0">
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // FilesView
 function FilesView() {
   const [files, setFiles] = useState<ApiFile[]>([]);
@@ -343,7 +491,25 @@ function FilesView() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [uploading, setUploading] = useState(false);
+  const [downloading, setDownloading] = useState<string | null>(null);
+  const [storageInfo, setStorageInfo] = useState<AdminStats['storage'] | null>(null);
+  const [deleteFile, setDeleteFile] = useState<ApiFile | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // ── Preview state ───────────────────────────
+  const [previewFile, setPreviewFile] = useState<ApiFile | null>(null);
+  const [previewContent, setPreviewContent] = useState<{ type: 'text'; text: string } | { type: 'html'; html: string } | { type: 'pdf'; url: string } | { type: 'image'; url: string } | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewType, setPreviewType] = useState<'sanitized' | 'original'>('sanitized');
+  const previewBlobUrl = useRef<string | null>(null);
+
+  // ── Upload queue state ──────────────────────
+  const [uploadQueue, setUploadQueue] = useState<QueueItem[]>([]);
+  const [queueCollapsed, setQueueCollapsed] = useState(false);
+  const queuePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  let localCounter = useRef(0);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -355,31 +521,222 @@ function FilesView() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Load storage stats
+  const loadStorage = useCallback(() => {
+    statsApi.get().then(s => setStorageInfo(s.storage)).catch(() => {});
+  }, []);
+
+  useEffect(() => { loadStorage(); }, [loadStorage]);
+
+  // Poll for PENDING/PROCESSING files in the file list every 3 seconds
+  useEffect(() => {
+    const pendingIds = files.filter(f => f.status === 'PENDING' || f.status === 'PROCESSING').map(f => f.id);
+    if (pendingIds.length === 0) {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+      return;
+    }
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = setInterval(async () => {
+      try {
+        const statuses = await adminFilesApi.bulkStatus(pendingIds);
+        setFiles(prev => prev.map(f => {
+          const updated = statuses.find(s => s.id === f.id);
+          if (updated && updated.status !== f.status) {
+            return { ...f, status: updated.status as ApiFile['status'], entityCount: updated.entityCount, sanitizedAt: updated.sanitizedAt, lastError: updated.lastError };
+          }
+          return f;
+        }));
+      } catch { /* silently retry next interval */ }
+    }, 3000);
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, [files]);
+
+  // Poll queue items that are processing/scanning
+  useEffect(() => {
+    const activeItems = uploadQueue.filter(q => (q.stage === 'processing' || q.stage === 'scanning') && q.fileId);
+    if (activeItems.length === 0) {
+      if (queuePollRef.current) { clearInterval(queuePollRef.current); queuePollRef.current = null; }
+      return;
+    }
+    if (queuePollRef.current) clearInterval(queuePollRef.current);
+    queuePollRef.current = setInterval(async () => {
+      try {
+        const fileIds = activeItems.map(q => q.fileId!).filter(Boolean);
+        if (fileIds.length === 0) return;
+        const statuses = await adminFilesApi.bulkStatus(fileIds);
+        setUploadQueue(prev => prev.map(q => {
+          if (!q.fileId) return q;
+          const s = statuses.find(st => st.id === q.fileId);
+          if (!s) return q;
+          if (s.status === 'PROCESSING' && q.stage === 'processing') {
+            // Transition to scanning after ~3s of processing
+            return { ...q, stage: 'scanning' as QueueStage };
+          }
+          if (s.status === 'SANITIZED') {
+            toast.success(`"${q.name}" sanitized — ${s.entityCount ?? 0} PII entities`);
+            load(); // refresh file list
+            loadStorage(); // refresh storage bar
+            return { ...q, stage: 'completed' as QueueStage, progress: 100, entityCount: s.entityCount };
+          }
+          if (s.status === 'ERROR') {
+            toast.error(`"${q.name}" failed: ${s.lastError ?? 'Unknown error'}`);
+            load();
+            loadStorage();
+            return { ...q, stage: 'error' as QueueStage, error: s.lastError || 'Processing failed' };
+          }
+          return q;
+        }));
+      } catch { /* retry next interval */ }
+    }, 2500);
+    return () => { if (queuePollRef.current) clearInterval(queuePollRef.current); };
+  }, [uploadQueue, load, loadStorage]);
+
+  // Auto-collapse and clear queue after all items are done
+  useEffect(() => {
+    if (uploadQueue.length === 0) return;
+    const allDone = uploadQueue.every(q => q.stage === 'completed' || q.stage === 'error');
+    if (!allDone) return;
+    const timer = setTimeout(() => setQueueCollapsed(true), 2000);
+    const clearTimer = setTimeout(() => setUploadQueue([]), 8000);
+    return () => { clearTimeout(timer); clearTimeout(clearTimer); };
+  }, [uploadQueue]);
+
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files?.length) return;
-    setUploading(true);
-    let success = 0;
-    for (const file of Array.from(e.target.files)) {
-      const fd = new FormData();
-      fd.append('file', file);
-      try { await adminFilesApi.upload(fd); success++; }
-      catch (err: unknown) { toast.error(`Failed: ${file.name} — ${err instanceof Error ? err.message : 'error'}`); }
-    }
-    if (success > 0) toast.success(`Uploaded ${success} file(s) — processing started`);
+    const selectedFiles = Array.from(e.target.files);
     e.target.value = '';
+
+    // Create queue items
+    const newItems: QueueItem[] = selectedFiles.map(f => ({
+      localId: `uq-${++localCounter.current}`,
+      name: f.name,
+      size: f.size,
+      stage: 'uploading' as QueueStage,
+      progress: 0,
+      fileId: null,
+      entityCount: null,
+      error: null,
+    }));
+    setUploadQueue(prev => [...newItems, ...prev]);
+    setQueueCollapsed(false);
+    setUploading(true);
+
+    // Upload sequentially with progress simulation
+    for (let i = 0; i < selectedFiles.length; i++) {
+      const file = selectedFiles[i];
+      const localId = newItems[i].localId;
+
+      // Simulate upload progress
+      let prog = 0;
+      const progInterval = setInterval(() => {
+        prog = Math.min(prog + Math.random() * 15 + 5, 90);
+        setUploadQueue(prev => prev.map(q => q.localId === localId ? { ...q, progress: Math.round(prog) } : q));
+      }, 200);
+
+      try {
+        const fd = new FormData();
+        fd.append('file', file);
+        const result = await adminFilesApi.upload(fd);
+        clearInterval(progInterval);
+        // Move to processing
+        setUploadQueue(prev => prev.map(q => q.localId === localId
+          ? { ...q, stage: 'processing', progress: 100, fileId: result.fileId }
+          : q
+        ));
+      } catch (err: unknown) {
+        clearInterval(progInterval);
+        const msg = err instanceof Error ? err.message : 'Upload failed';
+        setUploadQueue(prev => prev.map(q => q.localId === localId
+          ? { ...q, stage: 'error', error: msg }
+          : q
+        ));
+      }
+    }
+
     setUploading(false);
     load();
   };
 
-  const handleDelete = async (file: ApiFile) => {
-    if (!confirm(`Delete "${file.originalName}"?`)) return;
-    try { await adminFilesApi.delete(file.id); toast.success(`${file.originalName} deleted`); load(); }
-    catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Delete failed'); }
+  const clearQueue = () => setUploadQueue([]);
+  const dismissQueueItem = (localId: string) => setUploadQueue(prev => prev.filter(q => q.localId !== localId));
+
+  const handleDelete = async () => {
+    if (!deleteFile) return;
+    setDeleting(true);
+    try {
+      await adminFilesApi.delete(deleteFile.id);
+      toast.success(`${deleteFile.originalName} deleted`);
+      setDeleteFile(null);
+      load();
+      loadStorage();
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Delete failed');
+    } finally {
+      setDeleting(false);
+    }
   };
 
   const handleRescan = async (file: ApiFile) => {
     try { await adminFilesApi.rescan(file.id); toast.success(`${file.originalName} re-queued`); load(); }
     catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Rescan failed'); }
+  };
+
+  const handleDownloadOriginal = async (file: ApiFile) => {
+    setDownloading(`orig-${file.id}`);
+    try { await adminFilesApi.downloadOriginal(file.id, file.originalName); toast.success('Download started'); }
+    catch { toast.error('Download failed'); }
+    finally { setDownloading(null); }
+  };
+
+  const handleDownloadSanitized = async (file: ApiFile) => {
+    setDownloading(`san-${file.id}`);
+    try { await adminFilesApi.downloadSanitized(file.id, file.originalName); toast.success('Download started'); }
+    catch { toast.error('Download failed'); }
+    finally { setDownloading(null); }
+  };
+
+  const closePreview = () => {
+    if (previewBlobUrl.current) { URL.revokeObjectURL(previewBlobUrl.current); previewBlobUrl.current = null; }
+    setPreviewFile(null);
+    setPreviewContent(null);
+  };
+
+  const handlePreview = async (file: ApiFile, type: 'sanitized' | 'original' = 'sanitized') => {
+    setPreviewFile(file);
+    setPreviewType(type);
+    setPreviewContent(null);
+    setPreviewLoading(true);
+    if (previewBlobUrl.current) { URL.revokeObjectURL(previewBlobUrl.current); previewBlobUrl.current = null; }
+    try {
+      const blob = type === 'sanitized'
+        ? await adminFilesApi.previewSanitized(file.id)
+        : await adminFilesApi.previewOriginal(file.id);
+      const mime = file.mimeType.toLowerCase();
+      const ext = file.originalName.split('.').pop()?.toLowerCase() || '';
+
+      if (mime === 'application/pdf' || ext === 'pdf') {
+        const url = URL.createObjectURL(new Blob([blob], { type: 'application/pdf' }));
+        previewBlobUrl.current = url;
+        setPreviewContent({ type: 'pdf', url });
+      } else if (mime.includes('word') || ext === 'docx') {
+        const mammoth = await import('mammoth');
+        const arrayBuffer = await blob.arrayBuffer();
+        const result = await mammoth.convertToHtml({ arrayBuffer });
+        setPreviewContent({ type: 'html', html: result.value });
+      } else if (mime.startsWith('image/')) {
+        const url = URL.createObjectURL(blob);
+        previewBlobUrl.current = url;
+        setPreviewContent({ type: 'image', url });
+      } else {
+        const text = await blob.text();
+        setPreviewContent({ type: 'text', text });
+      }
+    } catch {
+      toast.error('Failed to load preview');
+      setPreviewFile(null);
+    } finally {
+      setPreviewLoading(false);
+    }
   };
 
   return (
@@ -400,6 +757,26 @@ function FilesView() {
           </NoiseCta>
         </div>
       </div>
+
+      {/* Upload Queue – inline at top */}
+      <UploadQueuePanel
+        queue={uploadQueue}
+        collapsed={queueCollapsed}
+        onToggle={() => setQueueCollapsed(c => !c)}
+        onClear={clearQueue}
+        onDismiss={dismissQueueItem}
+      />
+
+      {/* R2 storage */}
+      {storageInfo && (
+        <div className="flex items-center gap-3 px-4 py-2 rounded-lg border border-slate-700/40 bg-slate-800/30 max-w-lg w-full">
+          <HardDrive className="h-4 w-4 text-violet-400 shrink-0" />
+          <div className="flex-1 h-2 rounded-full bg-slate-700/60 overflow-hidden">
+            <div className="h-full rounded-full bg-gradient-to-r from-violet-500 to-purple-500" style={{ width: `${Math.min((storageInfo.usedBytes / storageInfo.limitBytes) * 100, 100)}%` }} />
+          </div>
+          <span className="text-xs font-mono text-slate-400 shrink-0">{_fmtBytes(storageInfo.usedBytes)} / 10 GB</span>
+        </div>
+      )}
 
       <div className="flex gap-3 flex-wrap">
         <div className="relative flex-1 min-w-48">
@@ -451,13 +828,35 @@ function FilesView() {
                       </span>
                     )}
                     <StatusBadge status={file.status} />
+                    {file.status === 'PROCESSING' && (
+                      <Spinner className="h-4 w-4 text-amber-400" />
+                    )}
+                    {file.status === 'SANITIZED' && (
+                      <>
+                        <button onClick={() => handlePreview(file, 'sanitized')}
+                          className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs text-cyan-400 border border-cyan-500/30 hover:bg-cyan-500/10 transition-all"
+                          title="Preview sanitized">
+                          <Eye className="h-3 w-3" /> View
+                        </button>
+                        <button onClick={() => handleDownloadSanitized(file)} disabled={downloading === `san-${file.id}`}
+                          className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs text-green-400 border border-green-500/30 hover:bg-green-500/10 transition-all disabled:opacity-50"
+                          title="Download sanitized">
+                          {downloading === `san-${file.id}` ? <Spinner className="h-3 w-3" /> : <Download className="h-3 w-3" />} Sanitized
+                        </button>
+                        <button onClick={() => handleDownloadOriginal(file)} disabled={downloading === `orig-${file.id}`}
+                          className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs text-blue-400 border border-blue-500/30 hover:bg-blue-500/10 transition-all disabled:opacity-50"
+                          title="Download original">
+                          {downloading === `orig-${file.id}` ? <Spinner className="h-3 w-3" /> : <Download className="h-3 w-3" />} Original
+                        </button>
+                      </>
+                    )}
                     {file.status === 'ERROR' && (
                       <button onClick={() => handleRescan(file)}
                         className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs text-amber-400 border border-amber-500/30 hover:bg-amber-500/10 transition-all">
                         <RefreshCw className="h-3 w-3" /> Rescan
                       </button>
                     )}
-                    <button onClick={() => handleDelete(file)}
+                    <button onClick={() => setDeleteFile(file)}
                       className="p-1.5 rounded-lg border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-all">
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
@@ -468,6 +867,116 @@ function FilesView() {
           )}
         </GC>
       </GlassCard>
+
+      {/* Delete confirmation modal */}
+      {deleteFile && (
+        <MOverlay>
+          <MCard>
+            <MHead>
+              <div className="flex items-center gap-3">
+                <div className="h-10 w-10 rounded-full bg-red-500/15 border border-red-500/30 flex items-center justify-center">
+                  <Trash2 className="h-5 w-5 text-red-400" />
+                </div>
+                <div>
+                  <h2 className="text-xl font-bold text-white">Delete File</h2>
+                  <p className="text-sm text-slate-400 mt-0.5">This action cannot be undone</p>
+                </div>
+              </div>
+            </MHead>
+            <MBody>
+              <div className="space-y-5">
+                <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/20">
+                  <p className="text-sm text-slate-300">You are about to permanently delete:</p>
+                  <p className="text-base font-semibold text-white mt-1">{deleteFile.originalName}</p>
+                  <p className="text-sm text-slate-400">{formatBytes(deleteFile.sizeBytes)}</p>
+                </div>
+                <p className="text-sm text-slate-500">Both the original and sanitized copies will be removed from storage.</p>
+                <div className="flex gap-3 pt-1">
+                  <button
+                    onClick={handleDelete}
+                    disabled={deleting}
+                    className="flex items-center justify-center gap-2 flex-1 h-11 rounded-xl bg-red-500/20 border border-red-500/40 text-red-300 font-semibold text-sm hover:bg-red-500/30 disabled:opacity-60 transition-all"
+                  >
+                    <Trash2 className="h-4 w-4" />{deleting ? 'Deleting...' : 'Yes, Delete File'}
+                  </button>
+                  <button onClick={() => setDeleteFile(null)} className="px-5 h-11 rounded-xl border border-slate-600 text-slate-300 text-sm hover:bg-slate-800 transition-all">Cancel</button>
+                </div>
+              </div>
+            </MBody>
+          </MCard>
+        </MOverlay>
+      )}
+
+      {/* Preview modal */}
+      {previewFile && (
+        <MOverlay>
+          <div className={cn(
+            'mx-4 bg-slate-900/80 backdrop-blur-xl border border-slate-700/60 rounded-3xl shadow-2xl overflow-hidden',
+            previewContent?.type === 'pdf' ? 'w-full max-w-4xl' : 'w-full max-w-2xl',
+          )}>
+            <MHead>
+              <div className="flex items-center justify-between">
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-lg font-semibold text-white truncate">{previewFile.originalName}</h3>
+                  <p className="text-xs text-slate-400 mt-1">
+                    {previewType === 'sanitized' ? 'Sanitized version' : 'Original version'}
+                    {previewFile.entityCount != null && ` · ${previewFile.entityCount} PII entities removed`}
+                  </p>
+                </div>
+                <button onClick={closePreview} className="p-1.5 rounded-lg hover:bg-slate-700/50 text-slate-400 hover:text-white transition-all shrink-0 ml-3">
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+              {/* Toggle between sanitized and original */}
+              <div className="flex gap-2 mt-3">
+                <button onClick={() => handlePreview(previewFile, 'sanitized')}
+                  className={cn('px-3 py-1 rounded-lg text-xs font-medium transition-all border',
+                    previewType === 'sanitized' ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40' : 'text-slate-400 border-slate-600/40 hover:bg-slate-800/60')}>
+                  Sanitized
+                </button>
+                <button onClick={() => handlePreview(previewFile, 'original')}
+                  className={cn('px-3 py-1 rounded-lg text-xs font-medium transition-all border',
+                    previewType === 'original' ? 'bg-blue-500/20 text-blue-300 border-blue-500/40' : 'text-slate-400 border-slate-600/40 hover:bg-slate-800/60')}>
+                  Original
+                </button>
+              </div>
+            </MHead>
+            <MBody>
+              {previewLoading ? (
+                <div className="flex items-center justify-center py-12">
+                  <Spinner className="h-6 w-6 text-cyan-400" />
+                </div>
+              ) : previewContent?.type === 'pdf' ? (
+                <iframe src={previewContent.url} className="w-full h-[65vh] rounded-xl border border-slate-700/40 bg-white" />
+              ) : previewContent?.type === 'html' ? (
+                <div
+                  className="max-h-[55vh] overflow-auto rounded-xl bg-white p-6 text-sm text-slate-900 prose prose-sm max-w-none"
+                  dangerouslySetInnerHTML={{ __html: previewContent.html }}
+                />
+              ) : previewContent?.type === 'image' ? (
+                <div className="flex items-center justify-center max-h-[55vh] overflow-auto rounded-xl bg-slate-950/60 border border-slate-700/40 p-4">
+                  <img src={previewContent.url} alt={previewFile.originalName} className="max-w-full max-h-[50vh] object-contain rounded-lg" />
+                </div>
+              ) : previewContent?.type === 'text' ? (
+                <pre className="max-h-[55vh] overflow-auto rounded-xl bg-slate-950/60 border border-slate-700/40 p-4 text-sm text-slate-300 font-mono whitespace-pre-wrap break-words">
+                  {previewContent.text}
+                </pre>
+              ) : null}
+              <div className="flex items-center gap-2 mt-4 justify-end">
+                <button onClick={() => { handleDownloadSanitized(previewFile); }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-green-400 border border-green-500/30 hover:bg-green-500/10 transition-all">
+                  <Download className="h-3 w-3" /> Download Sanitized
+                </button>
+                <button onClick={() => { handleDownloadOriginal(previewFile); }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-blue-400 border border-blue-500/30 hover:bg-blue-500/10 transition-all">
+                  <Download className="h-3 w-3" /> Download Original
+                </button>
+              </div>
+            </MBody>
+          </div>
+        </MOverlay>
+      )}
+
     </div>
   );
 }

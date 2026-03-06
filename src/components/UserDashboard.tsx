@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { FileText, Download, LogOut, Settings, LayoutDashboard, CheckCircle2, RefreshCw, ShieldCheck } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { FileText, Download, LogOut, Settings, LayoutDashboard, CheckCircle2, RefreshCw, ShieldCheck, Search, Eye, X } from 'lucide-react';
 import { Sidebar, SidebarBody, SidebarLink } from '../app/components/ui/sidebar-custom';
 import { Spinner } from '../app/components/ui/spinner';
 import { formatRelativeTime, formatFileSize, getFileIcon } from '../lib/utils';
@@ -16,21 +16,76 @@ export function UserDashboard() {
   const [activeView, setActiveView] = useState('dashboard');
   const [files, setFiles] = useState<ApiFile[]>([]);
   const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [downloading, setDownloading] = useState<string | null>(null);
+  const [previewFile, setPreviewFile] = useState<ApiFile | null>(null);
+  const [previewContent, setPreviewContent] = useState<{ type: 'text'; text: string } | { type: 'html'; html: string } | { type: 'pdf'; url: string } | { type: 'image'; url: string } | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const previewBlobUrl = useRef<string | null>(null);
 
   const load = useCallback(() => {
     setLoading(true);
-    userFilesApi.list()
+    userFilesApi.list({ search: search || undefined })
       .then(({ files: f }) => setFiles(f))
       .catch(() => toast.error('Failed to load files'))
       .finally(() => setLoading(false));
-  }, []);
+  }, [search]);
 
   useEffect(() => { load(); }, [load]);
 
   const sanitizedFiles = files.filter(f => f.status === 'SANITIZED');
 
   const handleDownload = async (file: ApiFile) => {
-    toast.info(`Preparing download for "${file.originalName}"...`);
+    setDownloading(file.id);
+    try {
+      await userFilesApi.downloadSanitized(file.id, file.originalName);
+      toast.success(`Downloading "${file.originalName}"`);
+    } catch {
+      toast.error(`Failed to download "${file.originalName}"`);
+    } finally {
+      setDownloading(null);
+    }
+  };
+
+  const closePreview = () => {
+    if (previewBlobUrl.current) { URL.revokeObjectURL(previewBlobUrl.current); previewBlobUrl.current = null; }
+    setPreviewFile(null);
+    setPreviewContent(null);
+  };
+
+  const handlePreview = async (file: ApiFile) => {
+    setPreviewFile(file);
+    setPreviewContent(null);
+    setPreviewLoading(true);
+    if (previewBlobUrl.current) { URL.revokeObjectURL(previewBlobUrl.current); previewBlobUrl.current = null; }
+    try {
+      const blob = await userFilesApi.previewSanitized(file.id);
+      const mime = file.mimeType.toLowerCase();
+      const ext = file.originalName.split('.').pop()?.toLowerCase() || '';
+
+      if (mime === 'application/pdf' || ext === 'pdf') {
+        const url = URL.createObjectURL(new Blob([blob], { type: 'application/pdf' }));
+        previewBlobUrl.current = url;
+        setPreviewContent({ type: 'pdf', url });
+      } else if (mime.includes('word') || ext === 'docx') {
+        const mammoth = await import('mammoth');
+        const arrayBuffer = await blob.arrayBuffer();
+        const result = await mammoth.convertToHtml({ arrayBuffer });
+        setPreviewContent({ type: 'html', html: result.value });
+      } else if (mime.startsWith('image/')) {
+        const url = URL.createObjectURL(blob);
+        previewBlobUrl.current = url;
+        setPreviewContent({ type: 'image', url });
+      } else {
+        const text = await blob.text();
+        setPreviewContent({ type: 'text', text });
+      }
+    } catch {
+      toast.error('Failed to load preview');
+      setPreviewFile(null);
+    } finally {
+      setPreviewLoading(false);
+    }
   };
 
   const links = [
@@ -202,9 +257,13 @@ export function UserDashboard() {
                           </div>
                         </div>
                         <div className="flex items-center gap-2 shrink-0 opacity-60 group-hover:opacity-100 transition-opacity">
-                          <button onClick={() => handleDownload(file)}
-                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-600 text-white text-xs font-medium hover:opacity-90 transition-all">
-                            <Download className="h-3.5 w-3.5" /> Download
+                          <button onClick={() => handlePreview(file)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-cyan-500/30 text-cyan-400 text-xs font-medium hover:bg-cyan-500/10 transition-all">
+                            <Eye className="h-3.5 w-3.5" /> View
+                          </button>
+                          <button onClick={() => handleDownload(file)} disabled={downloading === file.id}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-600 text-white text-xs font-medium hover:opacity-90 transition-all disabled:opacity-60">
+                            {downloading === file.id ? <Spinner className="h-3.5 w-3.5" /> : <Download className="h-3.5 w-3.5" />} Download
                           </button>
                         </div>
                       </div>
@@ -228,6 +287,17 @@ export function UserDashboard() {
                 className="px-3 h-9 rounded-xl border border-slate-600/50 text-slate-300 text-sm hover:bg-slate-800/60 transition-all flex items-center gap-2">
                 <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
               </button>
+            </div>
+
+            {/* Search */}
+            <div className="relative max-w-sm">
+              <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-500" />
+              <input
+                placeholder="Search files..."
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                className="w-full bg-slate-800/60 border border-slate-600/50 rounded-xl pl-9 pr-3 py-2 text-slate-200 placeholder:text-slate-500 text-sm focus:outline-none focus:border-cyan-400/50 focus:ring-2 focus:ring-cyan-400/20 transition-all"
+              />
             </div>
 
             <GlassCard>
@@ -256,9 +326,13 @@ export function UserDashboard() {
                           </p>
                         </div>
                         <div className="flex items-center gap-2 shrink-0 opacity-60 group-hover:opacity-100 transition-opacity">
-                          <button onClick={() => handleDownload(file)}
-                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-600 text-white text-xs font-medium hover:opacity-90 transition-all">
-                            <Download className="h-3.5 w-3.5" /> Download
+                          <button onClick={() => handlePreview(file)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-cyan-500/30 text-cyan-400 text-xs font-medium hover:bg-cyan-500/10 transition-all">
+                            <Eye className="h-3.5 w-3.5" /> View
+                          </button>
+                          <button onClick={() => handleDownload(file)} disabled={downloading === file.id}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-600 text-white text-xs font-medium hover:opacity-90 transition-all disabled:opacity-60">
+                            {downloading === file.id ? <Spinner className="h-3.5 w-3.5" /> : <Download className="h-3.5 w-3.5" />} Download
                           </button>
                         </div>
                       </div>
@@ -332,6 +406,58 @@ export function UserDashboard() {
           ) : renderContent()}
         </div>
       </div>
+
+      {/* Preview modal */}
+      {previewFile && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className={cn(
+            'mx-4 bg-slate-900/80 backdrop-blur-xl border border-slate-700/60 rounded-3xl shadow-2xl overflow-hidden',
+            previewContent?.type === 'pdf' ? 'w-full max-w-4xl' : 'w-full max-w-2xl',
+          )}>
+            <div className="px-8 pt-8 pb-4">
+              <div className="flex items-center justify-between">
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-lg font-semibold text-white truncate">{previewFile.originalName}</h3>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Sanitized version{previewFile.entityCount != null && ` · ${previewFile.entityCount} PII entities removed`}
+                  </p>
+                </div>
+                <button onClick={closePreview} className="p-1.5 rounded-lg hover:bg-slate-700/50 text-slate-400 hover:text-white transition-all shrink-0 ml-3">
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+            </div>
+            <div className="px-8 pb-8">
+              {previewLoading ? (
+                <div className="flex items-center justify-center py-12">
+                  <Spinner className="h-6 w-6 text-cyan-400" />
+                </div>
+              ) : previewContent?.type === 'pdf' ? (
+                <iframe src={previewContent.url} className="w-full h-[65vh] rounded-xl border border-slate-700/40 bg-white" />
+              ) : previewContent?.type === 'html' ? (
+                <div
+                  className="max-h-[55vh] overflow-auto rounded-xl bg-white p-6 text-sm text-slate-900 prose prose-sm max-w-none"
+                  dangerouslySetInnerHTML={{ __html: previewContent.html }}
+                />
+              ) : previewContent?.type === 'image' ? (
+                <div className="flex items-center justify-center max-h-[55vh] overflow-auto rounded-xl bg-slate-950/60 border border-slate-700/40 p-4">
+                  <img src={previewContent.url} alt={previewFile.originalName} className="max-w-full max-h-[50vh] object-contain rounded-lg" />
+                </div>
+              ) : previewContent?.type === 'text' ? (
+                <pre className="max-h-[55vh] overflow-auto rounded-xl bg-slate-950/60 border border-slate-700/40 p-4 text-sm text-slate-300 font-mono whitespace-pre-wrap break-words">
+                  {previewContent.text}
+                </pre>
+              ) : null}
+              <div className="flex items-center gap-2 mt-4 justify-end">
+                <button onClick={() => { handleDownload(previewFile); }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-gradient-to-r from-cyan-500 to-blue-600 text-white hover:opacity-90 transition-all">
+                  <Download className="h-3 w-3" /> Download
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
