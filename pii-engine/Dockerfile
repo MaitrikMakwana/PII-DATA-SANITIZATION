@@ -10,8 +10,8 @@ RUN apt-get update && \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Download spaCy English model
-RUN python -m spacy download en_core_web_lg
+# Download spaCy English model (sm = small, fits in 512MB free tier)
+RUN python -m spacy download en_core_web_sm
 
 COPY . .
 
