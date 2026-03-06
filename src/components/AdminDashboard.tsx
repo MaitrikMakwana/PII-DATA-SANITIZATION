@@ -490,6 +490,7 @@ function FilesView() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  const [typeFilter, setTypeFilter] = useState('');
   const [uploading, setUploading] = useState(false);
   const [downloading, setDownloading] = useState<string | null>(null);
   const [storageInfo, setStorageInfo] = useState<AdminStats['storage'] | null>(null);
@@ -513,11 +514,11 @@ function FilesView() {
 
   const load = useCallback(() => {
     setLoading(true);
-    adminFilesApi.list({ search: search || undefined, status: statusFilter || undefined, limit: 50 })
+    adminFilesApi.list({ search: search || undefined, status: statusFilter || undefined, mimeType: typeFilter || undefined, limit: 50 })
       .then(({ files: f, total: t }) => { setFiles(f); setTotal(t); })
       .catch(() => toast.error('Failed to load files'))
       .finally(() => setLoading(false));
-  }, [search, statusFilter]);
+  }, [search, statusFilter, typeFilter]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -789,6 +790,16 @@ function FilesView() {
           <option value="PROCESSING">Processing</option>
           <option value="SANITIZED">Sanitized</option>
           <option value="ERROR">Error</option>
+        </select>
+        <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)} className={dSelect}>
+          <option value="">All types</option>
+          <option value="application/pdf">PDF</option>
+          <option value="application/vnd.openxmlformats-officedocument.wordprocessingml.document">DOCX</option>
+          <option value="text/plain">TXT</option>
+          <option value="text/csv">CSV</option>
+          <option value="application/json">JSON</option>
+          <option value="application/sql,text/x-sql">SQL</option>
+          <option value="image/png,image/jpeg,image/jpg">Images</option>
         </select>
       </div>
 

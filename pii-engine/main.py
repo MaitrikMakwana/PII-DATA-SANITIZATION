@@ -12,6 +12,7 @@ Powered by Microsoft Presidio + spaCy.
 import io
 import json
 import logging
+import re
 import time
 from collections import Counter
 from typing import Optional
@@ -37,7 +38,8 @@ import pdfplumber
 import fitz  # PyMuPDF — for in-place PDF redaction
 from docx import Document
 
-from parsers import extract_text
+from parsers import extract_text, get_image_ocr_cache
+from PIL import Image, ImageDraw
 
 # ─── Logging ─────────────────────────────────────────────────────────────────
 
@@ -365,6 +367,10 @@ async def sanitize(
         output_bytes = _sanitize_docx_inplace(data, entity_list)
         output_mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
+    elif content_type in ("image/png", "image/jpeg") or ext in ("png", "jpg", "jpeg"):
+        output_bytes = _sanitize_image(data, entity_list)
+        output_mime = "image/png"
+
     else:
         # Text-based formats (SQL, TXT, CSV, etc.) — use Presidio anonymizer
         try:
@@ -411,11 +417,16 @@ async def sanitize(
         len(entity_list), elapsed, len(output_bytes),
     )
 
+    # Fix filename extension for image outputs
+    out_filename = filename
+    if output_mime == "image/png" and not filename.lower().endswith(".png"):
+        out_filename = filename.rsplit(".", 1)[0] + ".png" if "." in filename else filename + ".png"
+
     return Response(
         content=output_bytes,
         media_type=output_mime,
         headers={
-            "Content-Disposition": f'attachment; filename="sanitized_{filename}"',
+            "Content-Disposition": f'attachment; filename="sanitized_{out_filename}"',
         },
     )
 
@@ -642,6 +653,95 @@ def _sanitize_pdf_inplace(data: bytes, entity_list: list) -> bytes:
     buf = io.BytesIO()
     pdf.save(buf, garbage=4, deflate=True)
     pdf.close()
+    return buf.getvalue()
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  In-place Image sanitisation (black bars over PII words)
+# ═════════════════════════════════════════════════════════════════════════════
+
+# Entity types that are NOT personal PII on identity documents
+# (e.g., "Income Tax Department", "Government of India" = card headers)
+_IMAGE_SKIP_TYPES = {"ORGANIZATION", "NRP"}
+
+# Regex patterns for PII that Presidio might miss on noisy OCR text
+_IMAGE_PII_PATTERNS = [
+    r'[A-Z]{5}\d{4}[A-Z]',                              # Indian PAN
+    r'\d{4}\s\d{4}\s\d{4}(?!\s\d)',                     # Aadhaar (12 digits)
+    r'\d{4}\s\d{4}\s\d{4}\s\d{4}',                      # VID (16 digits)
+    r'(?:\+91[\s\-]?)?[6-9]\d{9}\b',                    # Indian phone
+    r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}',  # Email
+]
+
+
+def _sanitize_image(data: bytes, entity_list: list) -> bytes:
+    """
+    Open the image, use cached OCR bounding boxes with character offsets
+    to map entity spans to pixel regions, plus regex fallback for PII
+    patterns Presidio may miss.  Draw black rectangles over PII words.
+    Always outputs PNG.
+    """
+    img = Image.open(io.BytesIO(data)).convert("RGB")
+
+    # Upscale — must match parse_image() formula exactly
+    w, h = img.size
+    scale = 1
+    if w < 2000:
+        scale = max(2, (2000 // w) + 1)
+        img = img.resize((w * scale, h * scale), Image.LANCZOS)
+
+    # Get cached OCR word data (with char_start / char_end offsets)
+    ocr_words = get_image_ocr_cache(data)
+    if not ocr_words:
+        logger.warning("No cached OCR data found for image — re-running OCR")
+        from parsers import parse_image as _parse_img
+        _parse_img(data)
+        ocr_words = get_image_ocr_cache(data)
+
+    # ── 1. Offset-based matching from Presidio entities ──────────────────
+    #    Skip ORGANIZATION / NRP which are card headers, not personal PII
+    words_to_redact: set[int] = set()
+    for ent in entity_list:
+        if ent.get("type") in _IMAGE_SKIP_TYPES:
+            continue
+        ent_start = ent["start"]
+        ent_end = ent["end"]
+        for idx, w in enumerate(ocr_words):
+            w_start = w.get("char_start", -1)
+            w_end = w.get("char_end", -1)
+            if w_start < ent_end and w_end > ent_start:
+                words_to_redact.add(idx)
+
+    # ── 2. Regex fallback — catch PAN / Aadhaar / phone / email that ─────
+    #    Presidio may have missed due to noisy OCR text
+    ocr_text = " ".join(w["text"] for w in ocr_words)
+    for pattern in _IMAGE_PII_PATTERNS:
+        for m in re.finditer(pattern, ocr_text):
+            ms, me = m.start(), m.end()
+            for idx, w in enumerate(ocr_words):
+                ws = w.get("char_start", -1)
+                we = w.get("char_end", -1)
+                if ws < me and we > ms:
+                    words_to_redact.add(idx)
+
+    # ── 3. Draw black rectangles ─────────────────────────────────────────
+    draw = ImageDraw.Draw(img)
+    img_w, img_h = img.size
+    padding = 4
+
+    for idx in words_to_redact:
+        word_info = ocr_words[idx]
+        left = max(0, word_info["left"] - padding)
+        top = max(0, word_info["top"] - padding)
+        right = min(img_w, word_info["left"] + word_info["width"] + padding)
+        bottom = min(img_h, word_info["top"] + word_info["height"] + padding)
+        if right > left and bottom > top:
+            draw.rectangle([left, top, right, bottom], fill="black")
+
+    logger.info("Image redaction: %d words blacked out of %d OCR words", len(words_to_redact), len(ocr_words))
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
     return buf.getvalue()
 
 

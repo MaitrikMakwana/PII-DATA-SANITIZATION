@@ -1,5 +1,5 @@
 """
-File parsers — extract plain text from PDF, DOCX, TXT, and SQL files.
+File parsers — extract plain text from PDF, DOCX, TXT, SQL, and image files.
 
 Each parser returns a single string of the full text content.
 The /analyze endpoint runs PII detection on this string.
@@ -9,6 +9,12 @@ The /sanitize endpoint uses character offsets into this same string.
 import io
 import pdfplumber
 from docx import Document
+from PIL import Image, ImageEnhance, ImageFilter
+import pytesseract
+
+# ─── OCR cache: stores bounding-box data between analyze and sanitize calls ──
+# key = hash of image bytes, value = list of {text, left, top, width, height, conf, char_start, char_end}
+_image_ocr_cache: dict[int, list[dict]] = {}
 
 
 def parse_pdf(data: bytes) -> str:
@@ -59,6 +65,64 @@ def parse_sql(data: bytes) -> str:
     return parse_txt(data)
 
 
+def parse_image(data: bytes) -> str:
+    """
+    Extract text from an image using Tesseract OCR.
+    Preprocesses for better accuracy on ID cards (grayscale, contrast, sharpen).
+    Caches word-level bounding boxes WITH character offsets
+    for precise entity-to-pixel mapping during sanitization.
+    """
+    img = Image.open(io.BytesIO(data)).convert("RGB")
+
+    # Upscale small images aggressively for better OCR on card photos
+    w, h = img.size
+    scale = 1
+    if w < 2000:
+        scale = max(2, (2000 // w) + 1)
+        img = img.resize((w * scale, h * scale), Image.LANCZOS)
+
+    # Preprocess for OCR: grayscale → contrast enhancement → sharpen
+    gray = img.convert("L")
+    gray = ImageEnhance.Contrast(gray).enhance(1.5)
+    gray = gray.filter(ImageFilter.SHARPEN)
+
+    # Run OCR with bounding box data
+    ocr_data = pytesseract.image_to_data(
+        gray, config="--oem 3 --psm 4", output_type=pytesseract.Output.DICT
+    )
+
+    # Cache the bounding box data keyed by image bytes hash
+    # Track character offset of each word in the joined text
+    cache_key = hash(data)
+    words = []
+    current_offset = 0
+    for i in range(len(ocr_data["text"])):
+        word = ocr_data["text"][i].strip()
+        conf = int(ocr_data["conf"][i])
+        if word and conf > 0:
+            words.append({
+                "text": word,
+                "left": ocr_data["left"][i],
+                "top": ocr_data["top"][i],
+                "width": ocr_data["width"][i],
+                "height": ocr_data["height"][i],
+                "conf": conf,
+                "char_start": current_offset,
+                "char_end": current_offset + len(word),
+            })
+            current_offset += len(word) + 1  # +1 for the space separator
+    _image_ocr_cache[cache_key] = words
+
+    # Return plain text for PII analysis (space-joined, matching offsets)
+    text_parts = [w["text"] for w in words]
+    return " ".join(text_parts)
+
+
+def get_image_ocr_cache(data: bytes) -> list[dict]:
+    """Retrieve cached OCR bounding-box data for an image."""
+    return _image_ocr_cache.get(hash(data), [])
+
+
 # ─── Dispatcher ──────────────────────────────────────────────────────────────
 
 MIME_PARSERS = {
@@ -72,6 +136,8 @@ MIME_PARSERS = {
     "text/sql": parse_sql,
     "application/sql": parse_sql,
     "application/x-sql": parse_sql,
+    "image/png": parse_image,
+    "image/jpeg": parse_image,
 }
 
 # Fallback: detect by file extension
@@ -84,6 +150,9 @@ EXT_PARSERS = {
     ".log": parse_txt,
     ".json": parse_txt,
     ".xml": parse_txt,
+    ".png": parse_image,
+    ".jpg": parse_image,
+    ".jpeg": parse_image,
 }
 
 
