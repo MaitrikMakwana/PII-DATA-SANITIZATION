@@ -53,11 +53,12 @@ logger = logging.getLogger("pii-engine")
 
 # ─── Initialize engines ONCE at startup ──────────────────────────────────────
 
-logger.info("Loading spaCy model (en_core_web_lg) ...")
+SPACY_MODEL = os.environ.get("SPACY_MODEL", "en_core_web_sm")
+logger.info(f"Loading spaCy model ({SPACY_MODEL}) ...")
 
 nlp_config = {
     "nlp_engine_name": "spacy",
-    "models": [{"lang_code": "en", "model_name": "en_core_web_lg"}],
+    "models": [{"lang_code": "en", "model_name": SPACY_MODEL}],
 }
 nlp_engine = NlpEngineProvider(nlp_configuration=nlp_config).create_engine()
 
