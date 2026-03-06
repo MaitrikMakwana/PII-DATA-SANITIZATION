@@ -2,7 +2,8 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { FileText, Download, LogOut, Settings, LayoutDashboard, CheckCircle2, RefreshCw, ShieldCheck, Search, Eye, X } from 'lucide-react';
 import { Sidebar, SidebarBody, SidebarLink } from '../app/components/ui/sidebar-custom';
 import { Spinner } from '../app/components/ui/spinner';
-import { formatRelativeTime, formatFileSize, getFileIcon } from '../lib/utils';
+import { formatRelativeTime, formatFileSize } from '../lib/utils';
+import { FileIcon } from './FileIcon';
 import { cn } from '../lib/utils';
 import { useAuth } from '../lib/auth-context';
 import { toast } from 'sonner';
@@ -242,7 +243,7 @@ export function UserDashboard() {
                   <div className="space-y-2">
                     {sanitizedFiles.slice(0, 5).map((file) => (
                       <div key={file.id} className="group flex items-center gap-4 p-4 rounded-xl bg-slate-800/40 border border-slate-700/40 hover:border-slate-600/60 hover:bg-slate-800/60 transition-all">
-                        <span className="text-2xl shrink-0">{getFileIcon(file.mimeType)}</span>
+                        <FileIcon mimeType={file.mimeType} />
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-medium text-slate-200 truncate">{file.originalName}</p>
                           <div className="flex items-center gap-2 mt-0.5 flex-wrap">
@@ -318,7 +319,7 @@ export function UserDashboard() {
                   <div className="space-y-2">
                     {sanitizedFiles.map((file) => (
                       <div key={file.id} className="group flex items-center gap-4 p-4 rounded-xl bg-slate-800/40 border border-slate-700/40 hover:border-slate-600/60 hover:bg-slate-800/60 transition-all">
-                        <span className="text-2xl shrink-0">{getFileIcon(file.mimeType)}</span>
+                        <FileIcon mimeType={file.mimeType} />
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-medium text-slate-200 truncate">{file.originalName}</p>
                           <p className="text-xs text-slate-500 mt-0.5">
