@@ -30,7 +30,9 @@ function formatBytes(bytes: number) {
 }
 function formatDate(iso: string) { return new Date(iso).toLocaleString(); }
 function formatRelative(iso: string) {
-  const diff = Date.now() - new Date(iso).getTime();
+  const ts = new Date(iso).getTime();
+  if (isNaN(ts)) return '—';
+  const diff = Date.now() - ts;
   const m = Math.floor(diff / 60000);
   if (m < 1) return 'just now';
   if (m < 60) return `${m}m ago`;
@@ -186,7 +188,7 @@ const _fmtBytes = (b: number) => {
   return `${(b / 1024 ** 3).toFixed(2)} GB`;
 };
 
-function DashboardView() {
+function DashboardView({ onNavigate }: { onNavigate: (view: string) => void }) {
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -212,9 +214,17 @@ function DashboardView() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-white">Admin Dashboard</h1>
-        <p className="text-slate-400 mt-1">Monitor your PII sanitization operations</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold text-white">Admin Dashboard</h1>
+          <p className="text-slate-400 mt-1">Monitor your PII sanitization operations</p>
+        </div>
+        <button
+          onClick={() => onNavigate('files')}
+          className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 text-white text-sm font-medium shadow-lg shadow-cyan-500/25 hover:shadow-cyan-500/40 hover:opacity-90 transition-all"
+        >
+          <Upload className="h-4 w-4" /> Sanitize New File
+        </button>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
@@ -829,7 +839,7 @@ function FilesView() {
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-slate-200 truncate">{file.originalName}</p>
                     <p className="text-xs text-slate-500 mt-0.5">
-                      {formatBytes(file.sizeBytes)} · {file.uploader?.email ?? file.uploadedBy} · {formatRelative(file.createdAt)}
+                      {formatBytes(file.sizeBytes)} · {file.uploader?.email ?? file.uploadedBy} · {formatRelative(file.uploadedAt)}
                     </p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
@@ -1545,7 +1555,7 @@ export function AdminDashboard() {
 
   const renderContent = () => {
     switch (activeView) {
-      case 'dashboard': return <DashboardView />;
+      case 'dashboard': return <DashboardView onNavigate={setActiveView} />;
       case 'files':     return <FilesView />;
       case 'users':     return <UsersView />;
       case 'audit':     return <AuditView />;

@@ -38,6 +38,8 @@ import pdfplumber
 import fitz  # PyMuPDF — for in-place PDF redaction
 from docx import Document
 
+import csv as csv_mod
+
 from parsers import extract_text, get_image_ocr_cache
 from PIL import Image, ImageDraw
 
@@ -159,6 +161,51 @@ class CreditCardPatternRecognizer(LocalRecognizer):
 
 credit_card_recognizer = CreditCardPatternRecognizer()
 
+# CVV / CVC — 3 or 4 digit security code (context-dependent)
+cvv_recognizer = PatternRecognizer(
+    supported_entity="CVV",
+    name="CvvRecognizer",
+    patterns=[
+        Pattern("CVV_3", r"\b\d{3}\b", 0.3),
+        Pattern("CVV_4", r"\b\d{4}\b", 0.2),
+    ],
+    context=["cvv", "cvc", "security code", "card verification", "cvv2", "cvc2"],
+    supported_language="en",
+)
+
+# Lenient Indian PAN — matches any AAAAA9999A (relaxed 4th-char check)
+lenient_pan_recognizer = PatternRecognizer(
+    supported_entity="IN_PAN",
+    name="LenientPanRecognizer",
+    patterns=[
+        Pattern("PAN_LENIENT", r"\b[A-Z]{5}\d{4}[A-Z]\b", 0.5),
+    ],
+    context=["pan", "permanent account", "income tax", "pan card", "pan number"],
+    supported_language="en",
+)
+
+# Indian UPI ID — user@provider format
+upi_recognizer = PatternRecognizer(
+    supported_entity="UPI_ID",
+    name="UpiRecognizer",
+    patterns=[
+        Pattern("UPI", r"\b[a-zA-Z0-9.\-_]+@(?:paytm|upi|okaxis|okhdfcbank|oksbi|ybl|ibl|apl|axl|icici|kotak|sbi|hdfcbank|axisbank|indus|freecharge|phonepe|gpay|amazonpay)\b", 0.8),
+    ],
+    context=["upi", "vpa", "payment"],
+    supported_language="en",
+)
+
+# Indian IFSC code — 4-letter bank code + 0 + 6-char branch code
+ifsc_recognizer = PatternRecognizer(
+    supported_entity="IFSC",
+    name="IfscRecognizer",
+    patterns=[
+        Pattern("IFSC", r"\b[A-Z]{4}0[A-Z0-9]{6}\b", 0.6),
+    ],
+    context=["ifsc", "bank", "branch", "neft", "rtgs", "imps"],
+    supported_language="en",
+)
+
 # Register India-specific recognizers (built-in)
 india_recognizers = [
     InAadhaarRecognizer(),
@@ -176,6 +223,10 @@ analyzer.registry.add_recognizer(indian_phone_recognizer)
 analyzer.registry.add_recognizer(aadhaar_recognizer)
 analyzer.registry.add_recognizer(us_ssn_recognizer)
 analyzer.registry.add_recognizer(credit_card_recognizer)
+analyzer.registry.add_recognizer(cvv_recognizer)
+analyzer.registry.add_recognizer(lenient_pan_recognizer)
+analyzer.registry.add_recognizer(upi_recognizer)
+analyzer.registry.add_recognizer(ifsc_recognizer)
 
 anonymizer = AnonymizerEngine()
 
@@ -212,11 +263,14 @@ ENTITY_PRIORITY = {
     "IP_ADDRESS": 9,
     "IN_PAN": 8,
     "IN_VEHICLE_REGISTRATION": 8,
+    "IFSC": 8,
+    "UPI_ID": 8,
     "IN_PASSPORT": 7,
     "IN_AADHAAR": 6,
     "IN_VOTER": 6,
     "PERSON": 5,
     "LOCATION": 4,
+    "CVV": 3,
     "ORGANIZATION": 3,
     "DATE_TIME": 2,
     "NRP": 1,
@@ -245,6 +299,422 @@ def deduplicate(results: list[RecognizerResult]) -> list[RecognizerResult]:
         else:
             merged.append(current)
     return merged
+
+
+# ─── False-positive filter ────────────────────────────────────────────────
+
+# Entity types that are almost always false positives (document titles, labels)
+_SKIP_ENTITY_TYPES = {"ORGANIZATION", "NRP"}
+
+# Common form-field labels — if the entire entity text matches one of these
+# (case-insensitive, stripped), it is a label, not actual PII data.
+_LABEL_WORDS = {
+    "name", "email", "phone", "address", "aadhaar", "pan", "ifsc", "upi",
+    "cvv", "credit card", "bank account", "ip address", "ip_address",
+    "field", "example", "example pii", "pii", "dob", "date of birth",
+    "mobile", "contact", "passport", "voter id", "gstin",
+    "vehicle registration", "upi_id", "ifsc_code",
+    "first_name", "last_name", "full_name", "first name", "last name",
+    "full name", "card_number", "card number", "expiration_date",
+    "phone_number", "phone number", "email_address", "email address",
+    "credit_card", "ip_address", "address_text",
+}
+
+# Minimum text length per entity type to avoid matching short labels
+_MIN_ENTITY_LENGTHS = {
+    "IN_PAN": 10,
+    "IN_AADHAAR": 12,
+    "CREDIT_CARD": 13,
+    "PHONE_NUMBER": 7,
+    "EMAIL_ADDRESS": 5,
+    "IP_ADDRESS": 7,
+    "IN_GSTIN": 15,
+    "IN_PASSPORT": 8,
+    "US_SSN": 9,
+}
+
+
+def _should_skip_entity(ent_type: str, ent_text: str) -> bool:
+    """Return True if this entity is a false positive."""
+    if ent_type in _SKIP_ENTITY_TYPES:
+        return True
+    stripped = ent_text.strip()
+    if stripped.lower() in _LABEL_WORDS:
+        return True
+    min_len = _MIN_ENTITY_LENGTHS.get(ent_type)
+    if min_len and len(stripped) < min_len:
+        return True
+    return False
+
+
+def _trim_person_entity(ent_text: str, start: int, end: int):
+    """For PERSON entities, strip trailing/leading label words that spaCy
+    incorrectly absorbed (e.g. 'Rahul Sharma\nEmail' → 'Rahul Sharma').
+    Returns (text, start, end) or None to skip entirely."""
+    tokens = list(re.finditer(r'\S+', ent_text))
+    if not tokens:
+        return None
+    good = [t for t in tokens if t.group().lower() not in _LABEL_WORDS]
+    if not good:
+        return None
+    first, last = good[0], good[-1]
+    new_text = ent_text[first.start():last.end()]
+    return (new_text, start + first.start(), start + last.end())
+
+
+def _clean_results(results: list[RecognizerResult], text: str) -> list[RecognizerResult]:
+    """Filter false positives and trim label words from PERSON entities."""
+    cleaned: list[RecognizerResult] = []
+    for r in results:
+        ent_text = text[r.start:r.end]
+        if _should_skip_entity(r.entity_type, ent_text):
+            continue
+        if r.entity_type == "PERSON":
+            trimmed = _trim_person_entity(ent_text, r.start, r.end)
+            if trimmed is None:
+                continue
+            new_text, new_start, new_end = trimmed
+            if (new_start, new_end) != (r.start, r.end):
+                r = RecognizerResult(
+                    entity_type=r.entity_type,
+                    start=new_start,
+                    end=new_end,
+                    score=r.score,
+                )
+        cleaned.append(r)
+    return cleaned
+
+
+def _clean_entity_dicts(entity_list: list[dict]) -> list[dict]:
+    """Filter false positives and trim label words from PERSON entity dicts."""
+    cleaned: list[dict] = []
+    for ent in entity_list:
+        ent_type = ent.get("type", "")
+        ent_text = ent.get("text", "")
+        if _should_skip_entity(ent_type, ent_text):
+            continue
+        if ent_type == "PERSON":
+            trimmed = _trim_person_entity(ent_text, ent["start"], ent["end"])
+            if trimmed is None:
+                continue
+            new_text, new_start, new_end = trimmed
+            if new_text != ent_text:
+                ent = dict(ent)
+                ent["text"] = new_text
+                ent["start"] = new_start
+                ent["end"] = new_end
+        cleaned.append(ent)
+    return cleaned
+
+
+# ─── Masking helpers ─────────────────────────────────────────────────────────
+
+# Entity types whose values should stay VISIBLE (not masked).
+# They are still detected and reported, but the sanitized output keeps them.
+_KEEP_VISIBLE_TYPES = {"PERSON", "EMAIL_ADDRESS", "LOCATION"}
+
+
+def _mask_entity(entity_type: str, original_text: str) -> str | None:
+    """Return a masked version of the PII text.  Returns None for types
+    that should stay visible (names, emails, locations)."""
+
+    if entity_type in _KEEP_VISIBLE_TYPES:
+        return None  # keep original — do not redact
+
+    if entity_type == "CVV":
+        # "489" → "***"
+        return re.sub(r'\d', '*', original_text)
+
+    if entity_type == "PHONE_NUMBER":
+        # Mask last 2 digits only: "(217) 555-0123" → "(217) 555-01XX"
+        digits = list(re.finditer(r'\d', original_text))
+        if len(digits) > 2:
+            result = list(original_text)
+            for d in digits[-2:]:
+                result[d.start()] = 'X'
+            return ''.join(result)
+        return re.sub(r'\d', 'X', original_text)
+
+    if entity_type == "US_SSN":
+        # "321-45-7890" → "XXX-XX-7890" (show last 4)
+        digits = list(re.finditer(r'\d', original_text))
+        result = list(original_text)
+        for d in digits[:-4]:
+            result[d.start()] = 'X'
+        return ''.join(result)
+
+    if entity_type == "IN_AADHAAR":
+        # "1234 5678 9012" → "XXXX XXXX 9012" (show last 4)
+        digits = list(re.finditer(r'\d', original_text))
+        result = list(original_text)
+        for d in digits[:-4]:
+            result[d.start()] = 'X'
+        return ''.join(result)
+
+    if entity_type == "IN_PAN":
+        # "ABCDE1234F" → "XXXXXXXXXX"
+        return re.sub(r'[a-zA-Z0-9]', 'X', original_text)
+
+    if entity_type == "CREDIT_CARD":
+        # "4111-1111-1111-1111" → "****-****-****-1111" (show last 4)
+        digits = list(re.finditer(r'\d', original_text))
+        result = list(original_text)
+        for d in digits[:-4]:
+            result[d.start()] = '*'
+        # Replace separators between masked groups with spaces for clean look
+        return ''.join(result)
+
+    if entity_type == "US_BANK_NUMBER":
+        # "123456789012" → "XXXXXXXX9012" (show last 4)
+        digits = list(re.finditer(r'\d', original_text))
+        result = list(original_text)
+        for d in digits[:-4]:
+            result[d.start()] = 'X'
+        return ''.join(result)
+
+    if entity_type == "IP_ADDRESS":
+        # "192.168.1.105" → "XXX.XXX.X.XXX"
+        return re.sub(r'\d', 'X', original_text)
+
+    if entity_type == "DATE_TIME":
+        # "May 12, 1985" → "May 12, 19XX" (mask last 2 digits only)
+        digits = list(re.finditer(r'\d', original_text))
+        if len(digits) > 2:
+            result = list(original_text)
+            for d in digits[-2:]:
+                result[d.start()] = 'X'
+            return ''.join(result)
+        return re.sub(r'\d', 'X', original_text)
+
+    if entity_type == "UPI_ID":
+        # "rahul@paytm" → "XXXXX@XXXXXX"
+        return re.sub(r'[a-zA-Z0-9]', 'X', original_text)
+
+    if entity_type == "IFSC":
+        # "HDFC0001234" → "XXXXXXXXXXX"
+        return re.sub(r'[a-zA-Z0-9]', 'X', original_text)
+
+    # Default: mask all alphanumeric
+    return re.sub(r'[a-zA-Z0-9]', 'X', original_text)
+
+
+def _mask_text_manual(text: str, entity_list: list[dict]) -> str:
+    """Replace PII in text with masked versions (offset-based, end-to-start).
+    Skips entities whose type is in _KEEP_VISIBLE_TYPES."""
+    sorted_ents = sorted(entity_list, key=lambda e: e["start"], reverse=True)
+    result = text
+    for ent in sorted_ents:
+        masked = _mask_entity(ent["type"], ent["text"])
+        if masked is None:
+            continue  # keep visible
+        result = result[:ent["start"]] + masked + result[ent["end"]:]
+    return result
+
+
+# ─── Structured-data CVV detection ───────────────────────────────────────────
+# In CSV/SQL/JSON the column header "cvv" is too far from the cell values
+# for Presidio's context window.  These helpers find CVV values by column/key.
+
+_CVV_COLUMN_NAMES = {"cvv", "cvc", "cvv2", "cvc2", "security_code", "card_verification"}
+
+
+def _csv_cell_spans(line: str) -> list[tuple[int, int]]:
+    """Return (start, end) byte offsets for each cell in a CSV line."""
+    spans: list[tuple[int, int]] = []
+    start = 0
+    in_quotes = False
+    for i, ch in enumerate(line):
+        if ch == '"':
+            in_quotes = not in_quotes
+        elif ch == ',' and not in_quotes:
+            spans.append((start, i))
+            start = i + 1
+    spans.append((start, len(line)))
+    return spans
+
+
+def _detect_csv_column_entities(text: str) -> list[RecognizerResult]:
+    """Find CVV values in CSV by column-header mapping."""
+    lines = text.split('\n')
+    if len(lines) < 2:
+        return []
+    try:
+        header = next(csv_mod.reader(io.StringIO(lines[0])))
+    except Exception:
+        return []
+    cvv_cols: set[int] = set()
+    for i, h in enumerate(header):
+        if h.strip().lower() in _CVV_COLUMN_NAMES:
+            cvv_cols.add(i)
+    if not cvv_cols:
+        return []
+    results: list[RecognizerResult] = []
+    offset = len(lines[0]) + 1
+    for line_idx in range(1, len(lines)):
+        line = lines[line_idx]
+        if not line.strip():
+            offset += len(line) + 1
+            continue
+        cell_spans = _csv_cell_spans(line)
+        for col_idx in cvv_cols:
+            if col_idx >= len(cell_spans):
+                continue
+            s, e = cell_spans[col_idx]
+            cell_text = line[s:e]
+            m = re.search(r'\d{3,4}', cell_text)
+            if m:
+                results.append(RecognizerResult(
+                    entity_type="CVV", start=offset + s + m.start(),
+                    end=offset + s + m.end(), score=0.85))
+        offset += len(line) + 1
+    return results
+
+
+def _sql_value_spans(values_text: str) -> list[tuple[int, int]]:
+    """Return (start, end) offsets for each value in a SQL VALUES clause."""
+    spans: list[tuple[int, int]] = []
+    start = 0
+    i = 0
+    in_quotes = False
+    quote_char = None
+    while i < len(values_text):
+        ch = values_text[i]
+        if not in_quotes:
+            if ch in ("'", '"'):
+                in_quotes = True
+                quote_char = ch
+            elif ch == ',':
+                spans.append((start, i))
+                start = i + 1
+        else:
+            if ch == quote_char:
+                if i + 1 < len(values_text) and values_text[i + 1] == quote_char:
+                    i += 2
+                    continue
+                in_quotes = False
+        i += 1
+    spans.append((start, len(values_text)))
+    return spans
+
+
+def _detect_sql_column_entities(text: str) -> list[RecognizerResult]:
+    """Find CVV values in SQL INSERT statements by column order.
+    Supports both:
+      - CREATE TABLE ... (col1 TYPE, col2 TYPE) with VALUES (...);
+      - INSERT INTO table (col1, col2) VALUES (...), (...), ...;
+    """
+    cvv_indices: set[int] = set()
+    columns: list[str] = []
+
+    # Strategy 1: parse columns from INSERT INTO ... (columns) VALUES
+    for ins_match in re.finditer(
+        r'INSERT\s+INTO\s+\w+\s*\(([^)]+)\)\s*VALUES',
+        text, re.IGNORECASE,
+    ):
+        cols = [c.strip().lower() for c in ins_match.group(1).split(',')]
+        for i, c in enumerate(cols):
+            if c in _CVV_COLUMN_NAMES:
+                cvv_indices.add(i)
+        if cvv_indices:
+            columns = cols
+            break
+
+    # Strategy 2 fallback: parse from CREATE TABLE
+    if not cvv_indices:
+        create_match = re.search(
+            r'CREATE\s+TABLE\s+\w+\s*\((.*?)\)\s*;', text,
+            re.IGNORECASE | re.DOTALL)
+        if create_match:
+            columns = [col_def.strip().split()[0].strip().lower()
+                       for col_def in re.split(r',(?![^(]*\))', create_match.group(1))]
+            cvv_indices = {i for i, c in enumerate(columns) if c in _CVV_COLUMN_NAMES}
+
+    if not cvv_indices:
+        return []
+
+    results: list[RecognizerResult] = []
+    # Match individual value tuples: (val1, val2, ...) anywhere after VALUES
+    for match in re.finditer(r'\(([^()]+)\)', text):
+        # Only consider tuples that appear after a VALUES keyword
+        before = text[max(0, match.start() - 200):match.start()]
+        if not re.search(r'VALUES\s*$', before, re.IGNORECASE) and \
+           not re.search(r'\)\s*,\s*$', before):
+            continue
+        v_text = match.group(1)
+        v_start = match.start(1)
+        val_spans = _sql_value_spans(v_text)
+        for col_idx in cvv_indices:
+            if col_idx >= len(val_spans):
+                continue
+            vs, ve = val_spans[col_idx]
+            cell = v_text[vs:ve].strip().strip("'\"")
+            if not cell or cell.upper() == 'NULL':
+                continue
+            dm = re.search(r'\d{3,4}', v_text[vs:ve])
+            if dm:
+                results.append(RecognizerResult(
+                    entity_type="CVV", start=v_start + vs + dm.start(),
+                    end=v_start + vs + dm.end(), score=0.85))
+    return results
+
+
+def _detect_json_key_entities(text: str) -> list[RecognizerResult]:
+    """Find CVV values in JSON by key names."""
+    results: list[RecognizerResult] = []
+    for key_name in _CVV_COLUMN_NAMES:
+        pattern = rf'["\']({re.escape(key_name)})["\']\s*:\s*["\']?(\d{{3,4}})["\']?'
+        for m in re.finditer(pattern, text, re.IGNORECASE):
+            results.append(RecognizerResult(
+                entity_type="CVV", start=m.start(2),
+                end=m.end(2), score=0.85))
+    return results
+
+
+def _detect_structured_cvv(
+    text: str, content_type: str, filename: str,
+) -> list[RecognizerResult]:
+    """Detect CVV values in structured data where Presidio's context window
+    cannot reach from the column/key header to the cell value."""
+    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+    if content_type in ('text/csv', 'application/csv') or ext == 'csv':
+        return _detect_csv_column_entities(text)
+    if content_type == 'application/json' or ext == 'json':
+        return _detect_json_key_entities(text)
+    if content_type in ('text/sql', 'application/sql', 'application/x-sql') or ext == 'sql':
+        return _detect_sql_column_entities(text)
+    return []
+
+
+def _filter_cvv_false_positives(
+    results: list[RecognizerResult], text: str,
+) -> list[RecognizerResult]:
+    """Remove CVV detections that are actually part of a date or IP pattern.
+    Presidio's context window can bleed from a nearby 'cvv' key to an
+    adjacent value, causing digits to be mis-classified as CVV."""
+    filtered: list[RecognizerResult] = []
+    for r in results:
+        if r.entity_type == "CVV":
+            # Date patterns DD/MM/YYYY or YYYY-MM-DD
+            ctx_before = text[max(0, r.start - 6):r.end]
+            ctx_after = text[r.start:min(len(text), r.end + 6)]
+            if re.search(r'\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{3,4}$', ctx_before):
+                continue
+            if re.search(r'^\d{4}[/\-\.]\d{1,2}[/\-\.]', ctx_after):
+                continue
+            # IP address: only reject if the CVV span overlaps an IP match
+            ctx_start = max(0, r.start - 16)
+            ctx_ip = text[ctx_start:min(len(text), r.end + 16)]
+            is_in_ip = False
+            for m in re.finditer(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', ctx_ip):
+                ip_abs_start = ctx_start + m.start()
+                ip_abs_end = ctx_start + m.end()
+                if r.start >= ip_abs_start and r.end <= ip_abs_end:
+                    is_in_ip = True
+                    break
+            if is_in_ip:
+                continue
+        filtered.append(r)
+    return filtered
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -285,8 +755,14 @@ async def analyze(file: UploadFile = File(...)):
         language="en",
         score_threshold=SCORE_THRESHOLD,
     )
+    # Add column/key-aware CVV detection for structured formats
+    raw_results.extend(_detect_structured_cvv(text, content_type, filename))
+    raw_results = _filter_cvv_false_positives(raw_results, text)
 
     results = deduplicate(raw_results)
+
+    # Filter out false positives and trim label words from PERSON entities
+    results = _clean_results(results, text)
 
     # Build response
     entities = []
@@ -348,6 +824,9 @@ async def sanitize(
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid entities JSON")
 
+    # Filter out false positives and trim label words from PERSON entities
+    entity_list = _clean_entity_dicts(entity_list)
+
     ext = ""
     if "." in filename:
         ext = filename.rsplit(".", 1)[-1].lower()
@@ -372,37 +851,13 @@ async def sanitize(
         output_mime = "image/png"
 
     else:
-        # Text-based formats (SQL, TXT, CSV, etc.) — use Presidio anonymizer
+        # Text-based formats (SQL, TXT, CSV, etc.) — mask with X characters
         try:
             text = extract_text(data, content_type, filename)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
-        recognizer_results = []
-        for ent in entity_list:
-            recognizer_results.append(
-                RecognizerResult(
-                    entity_type=ent["type"],
-                    start=ent["start"],
-                    end=ent["end"],
-                    score=ent.get("score", 1.0),
-                )
-            )
-
-        operators = {"DEFAULT": OperatorConfig("replace", {"new_value": "[REDACTED]"})}
-        for ent in entity_list:
-            entity_type = ent["type"]
-            if entity_type not in operators:
-                operators[entity_type] = OperatorConfig(
-                    "replace", {"new_value": f"[{entity_type}]"}
-                )
-
-        anonymized = anonymizer.anonymize(
-            text=text,
-            analyzer_results=recognizer_results,
-            operators=operators,
-        )
-        redacted_text = anonymized.text
+        redacted_text = _mask_text_manual(text, entity_list)
 
         if ext == "sql" or content_type in ("text/sql", "application/sql", "application/x-sql"):
             output_bytes = redacted_text.encode("utf-8")
@@ -453,10 +908,15 @@ async def analyze_and_sanitize(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail=str(e))
 
     raw_results = analyzer.analyze(text=text, language="en", score_threshold=SCORE_THRESHOLD)
+    # Add column/key-aware CVV detection for structured formats
+    raw_results.extend(_detect_structured_cvv(text, content_type, filename))
+    raw_results = _filter_cvv_false_positives(raw_results, text)
     results = deduplicate(raw_results)
 
+    # Filter out false positives and trim label words from PERSON entities
+    results = _clean_results(results, text)
+
     entities = []
-    recognizer_results = []
     for r in results:
         entities.append({
             "type": r.entity_type,
@@ -465,21 +925,15 @@ async def analyze_and_sanitize(file: UploadFile = File(...)):
             "end": r.end,
             "score": round(r.score, 4),
         })
-        recognizer_results.append(r)
 
-    operators = {"DEFAULT": OperatorConfig("replace", {"new_value": "[REDACTED]"})}
-    for r in results:
-        if r.entity_type not in operators:
-            operators[r.entity_type] = OperatorConfig("replace", {"new_value": f"[{r.entity_type}]"})
-
-    anonymized = anonymizer.anonymize(text=text, analyzer_results=recognizer_results, operators=operators)
+    sanitized_text = _mask_text_manual(text, entities)
 
     by_type = dict(Counter(e["type"] for e in entities))
 
     return {
         "entities": entities,
         "stats": {"total": len(entities), "by_type": by_type},
-        "sanitized_text": anonymized.text,
+        "sanitized_text": sanitized_text,
     }
 
 
@@ -554,16 +1008,18 @@ def _sanitize_docx_inplace(data: bytes, entity_list: list) -> bytes:
     doc = Document(io.BytesIO(data))
 
     # Phase 1 map: entity text → unique placeholder (PUA Unicode)
-    # Phase 2 map: placeholder → final [TYPE] tag
+    # Phase 2 map: placeholder → masked text
+    # Skip keep-visible types (PERSON, EMAIL, LOCATION)
     replacement_map: dict[str, str] = {}
     placeholder_to_tag: dict[str, str] = {}
     idx = 0
     for ent in entity_list:
         txt = ent.get("text", "")
-        if txt and txt not in replacement_map:
+        masked = _mask_entity(ent.get("type", ""), txt)
+        if txt and masked is not None and txt not in replacement_map:
             placeholder = f"\uE000{idx}\uE001"
             replacement_map[txt] = placeholder
-            placeholder_to_tag[placeholder] = f'[{ent["type"]}]'
+            placeholder_to_tag[placeholder] = masked
             idx += 1
 
     sorted_phase1 = sorted(
@@ -626,12 +1082,13 @@ def _sanitize_pdf_inplace(data: bytes, entity_list: list) -> bytes:
     """
     pdf = fitz.open(stream=data, filetype="pdf")
 
-    # Unique replacement map (longer first)
+    # Unique replacement map (longer first) — skip keep-visible types
     replacement_map: dict[str, str] = {}
     for ent in entity_list:
         txt = ent.get("text", "")
-        if txt and txt not in replacement_map:
-            replacement_map[txt] = f'[{ent["type"]}]'
+        masked = _mask_entity(ent.get("type", ""), txt)
+        if txt and masked is not None and txt not in replacement_map:
+            replacement_map[txt] = masked
 
     sorted_items = sorted(
         replacement_map.items(), key=lambda x: len(x[0]), reverse=True

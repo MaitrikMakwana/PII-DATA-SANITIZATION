@@ -26,6 +26,7 @@ export function formatDate(dateString: string): string {
 
 export function formatRelativeTime(dateString: string): string {
   const date = new Date(dateString);
+  if (isNaN(date.getTime())) return '—';
   const now = new Date();
   const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
 
