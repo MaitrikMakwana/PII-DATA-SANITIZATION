@@ -344,6 +344,11 @@ export function LoginPage() {
               </CardDescription>
             </CardHeader>
             <CardContent>
+              <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-3 text-xs space-y-1">
+                <p className="font-semibold text-blue-800">Demo Credentials</p>
+                <p className="text-blue-700"><span className="font-medium">Admin:</span> piisanitize@gmail.com / Admin@123</p>
+                <p className="text-blue-700"><span className="font-medium">User:</span> kachhiyadarshan6514@gmail.com / Dar@1234</p>
+              </div>
               <form onSubmit={handleLogin} className="space-y-4">
                 {error && (
                   <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
