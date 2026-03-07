@@ -29,12 +29,15 @@ const PII_ENGINE_URL  = process.env.PII_ENGINE_URL!;
 const CONCURRENCY     = parseInt(process.env.WORKER_CONCURRENCY ?? '5', 10);
 
 // ─── Timeout per MIME type (ms) — generous for free-tier cold starts ──
+// For large files (>2 MB) add 60 s per MB to handle chunked analysis.
 
-function jobTimeout(mimeType: string): number {
-  if (mimeType === 'application/pdf') return 300_000;
-  if (mimeType.includes('word'))      return 180_000;
-  if (mimeType.startsWith('image/'))  return 300_000;
-  return 120_000;
+function jobTimeout(mimeType: string, fileSizeBytes = 0): number {
+  const sizeMB = fileSizeBytes / (1024 * 1024);
+  const sizeBonus = sizeMB > 2 ? Math.ceil(sizeMB) * 60_000 : 0;
+  if (mimeType === 'application/pdf') return 300_000 + sizeBonus;
+  if (mimeType.includes('word'))      return 180_000 + sizeBonus;
+  if (mimeType.startsWith('image/'))  return 300_000 + sizeBonus;
+  return 120_000 + sizeBonus;
 }
 
 // ─── Wake the PII engine (Render free tier sleeps after 15 min) ───────
@@ -70,7 +73,8 @@ async function processJob(job: Job<PiiScanJobData>): Promise<void> {
   }
   const fileBuffer = Buffer.concat(chunks);
 
-  const timeout = jobTimeout(mimeType);
+  const timeout = jobTimeout(mimeType, fileBuffer.length);
+  console.log(`[Worker] File size: ${(fileBuffer.length / 1024 / 1024).toFixed(2)} MB, timeout: ${timeout / 1000}s`);
 
   // Stage 2.5 — wake PII engine (cold start on Render free tier)
   await wakePiiEngine();

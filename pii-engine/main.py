@@ -279,6 +279,57 @@ ENTITY_PRIORITY = {
 }
 
 
+# ─── Chunked analysis for large texts ─────────────────────────────────────────
+
+_CHUNK_SIZE = 100_000   # ~100 KB per chunk
+_CHUNK_OVERLAP = 500    # overlap so entities at boundaries aren't split
+
+
+def _analyze_chunked(
+    text: str,
+    language: str = "en",
+    score_threshold: float = SCORE_THRESHOLD,
+) -> list[RecognizerResult]:
+    """Run Presidio on *text*, splitting into chunks for large inputs to
+    avoid OOM / timeout on memory-constrained hosts (e.g. Render 512 MB)."""
+    if len(text) <= _CHUNK_SIZE:
+        return list(analyzer.analyze(
+            text=text, language=language, score_threshold=score_threshold,
+        ))
+
+    logger.info(
+        "Text is %d chars — chunking into ~%dK segments",
+        len(text), _CHUNK_SIZE // 1000,
+    )
+    all_results: list[RecognizerResult] = []
+    start = 0
+    chunk_num = 0
+    while start < len(text):
+        end = min(start + _CHUNK_SIZE, len(text))
+        # Extend to next newline so we don't split mid-line
+        if end < len(text):
+            nl = text.find('\n', end)
+            if nl != -1 and nl - end < 2000:
+                end = nl + 1
+        chunk = text[start:end]
+        chunk_num += 1
+        logger.info("  chunk %d: chars %d–%d (%d chars)", chunk_num, start, end, len(chunk))
+
+        chunk_results = analyzer.analyze(
+            text=chunk, language=language, score_threshold=score_threshold,
+        )
+        # Shift offsets back to the original text positions
+        for r in chunk_results:
+            r.start += start
+            r.end += start
+        all_results.extend(chunk_results)
+
+        # Move forward, minus overlap
+        start = end - _CHUNK_OVERLAP if end < len(text) else end
+
+    return all_results
+
+
 def _rank(r: RecognizerResult) -> tuple:
     """Rank a result: prefer type priority, then score, then longer span."""
     span_len = r.end - r.start
@@ -751,12 +802,8 @@ async def analyze(file: UploadFile = File(...)):
 
     logger.info("Extracted %d characters of text", len(text))
 
-    # Run Presidio analyzer
-    raw_results = analyzer.analyze(
-        text=text,
-        language="en",
-        score_threshold=SCORE_THRESHOLD,
-    )
+    # Run Presidio analyzer (chunked for large files)
+    raw_results = _analyze_chunked(text)
     # Add column/key-aware CVV detection for structured formats
     raw_results.extend(_detect_structured_cvv(text, content_type, filename))
     raw_results = _filter_cvv_false_positives(raw_results, text)
@@ -909,7 +956,7 @@ async def analyze_and_sanitize(file: UploadFile = File(...)):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    raw_results = analyzer.analyze(text=text, language="en", score_threshold=SCORE_THRESHOLD)
+    raw_results = _analyze_chunked(text)
     # Add column/key-aware CVV detection for structured formats
     raw_results.extend(_detect_structured_cvv(text, content_type, filename))
     raw_results = _filter_cvv_false_positives(raw_results, text)
